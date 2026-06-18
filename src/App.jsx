@@ -1,11 +1,10 @@
 import React, { useState, useEffect } from 'react';
 // 1. Importamos el cliente de Supabase
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from './supabaseClient';
 
 // Configura aquí tus credenciales de Supabase (o impórtalas si las tienes en otro archivo)
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ============ MÓDULO: CLEANING CHECK ============
 const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) => {
@@ -14,10 +13,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
   const [workerName, setWorkerName] = useState('');
   const [serviceStarted, setServiceStarted] = useState(false);
   const [startTime, setStartTime] = useState(null);
-  const [activeReportId, setActiveReportId] = useState(null); // Guarda el UUID generado por Supabase al iniciar
-  const [dbReports, setDbReports] = useState([]);              // Almacena los reportes traídos de Supabase
-
-  // Guardamos el ID del reporte activo en Supabase para poder actualizarlo al finalizar
+  const [activeReportId, setActiveReportId] = useState(null); // Fundamental para hacer el UPDATE
 
   const [editingApartmentId, setEditingApartmentId] = useState(null);
   const [newApartmentName, setNewApartmentName] = useState('');
@@ -25,6 +21,10 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
   const [editingNameValue, setEditingNameValue] = useState('');
   const [newChecklistItem, setNewChecklistItem] = useState('');
   const [selectedZoneForEdit, setSelectedZoneForEdit] = useState('kitchen');
+
+  // --- NUEVOS ESTADOS PARA SUPABASE ---
+  const [dbReports, setDbReports] = useState([]);
+  const [isLoadingReports, setIsLoadingReports] = useState(false);
 
   const zones = {
     kitchen: { name: 'Cocina', icon: '🍳' },
@@ -48,40 +48,74 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
     return `${hours}h ${minutes}min`;
   };
 
-  // ======= ENTRADA A SUPABASE: INICIAR SERVICIO =======
+  // --- EFECTO PARA CARGAR REPORTES DESDE SUPABASE ---
+  // --- EFECTO PARA CARGAR REPORTES Y ESCUCHAR EN VIVO ---
+  useEffect(() => {
+    if (userRole === 'owner' && currentTab === 'owner') {
+      fetchReportsFromSupabase();
+
+      // Canal en tiempo real: Si un empleado hace un cambio, el panel se recarga solo
+      const realtimeChannel = supabase
+        .channel('owner_live_reports')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'reportes_aseo' }, () => {
+          fetchReportsFromSupabase();
+        })
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(realtimeChannel);
+      };
+    }
+  }, [userRole, currentTab]);
+
+  const fetchReportsFromSupabase = async () => {
+    setIsLoadingReports(true);
+    try {
+      // CORREGIDO: Apuntando a reportes_aseo
+      const { data, error } = await supabase
+        .from('reportes_aseo')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setDbReports(data || []);
+    } catch (err) {
+      console.error("Error cargando reportes de Supabase:", err.message);
+    } finally {
+      setIsLoadingReports(false);
+    }
+  };
+
   const startService = async () => {
     if (!currentApartment || !workerName.trim()) return;
 
     try {
       const { data, error } = await supabase
         .from('reportes_aseo')
-        .insert([
-          {
-            apartamento: currentApartment.name,
-            estado: 'En Progreso',
-            checklist_zonas: currentApartment.checklist,
-            inventario: currentApartment.inventory,
-            completion: 0,
-            novedades: `Servicio iniciado por: ${workerName}`
-          }
-        ])
-        .select(); // El .select() es obligatorio para que nos devuelva el ID creado
+        .insert([{
+          apartamento: currentApartment.name,
+          estado: 'En Progreso',
+          checklist_zonas: currentApartment.checklist,
+          inventario: currentApartment.inventory,
+          completion: 0,
+          novedades: `Servicio iniciado por: ${workerName}`
+        }])
+        .select();
 
       if (error) throw error;
 
       if (data && data.length > 0) {
-        setActiveReportId(data[0].id); // Guardamos el ID retornado por Supabase
+        setActiveReportId(data[0].id); // Guardamos el ID en la memoria
       }
 
       setStartTime(new Date());
       setServiceStarted(true);
       setCurrentTab('cleaning');
     } catch (error) {
-      alert('Error de Supabase al iniciar servicio: ' + error.message);
+      alert('Error al conectar con Supabase: ' + error.message);
     }
   };
 
-  // ======= ACTUALIZACIÓN EN SUPABASE: FINALIZAR Y ENVIAR =======
   const submitReport = async () => {
     if (!currentApartment || !activeReportId) return;
 
@@ -95,25 +129,33 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
         .from('reportes_aseo')
         .update({
           estado: 'Completado',
-          checklist_zonas: currentApartment.checklist, // Envía el JSON final de las tareas
-          inventario: currentApartment.inventory,       // Envía el JSON final de insumos
-          completion: completion,                      // Guarda el número del progreso real (ej: 85)
+          checklist_zonas: currentApartment.checklist,
+          inventario: currentApartment.inventory,
+          completion: completion,
           novedades: `Trabajador: ${workerName} | Duración: ${duration} | Nota: ${notes}`
         })
-        .eq('id', activeReportId); // Modifica SOLAMENTE la fila que abrimos al iniciar
+        .eq('id', activeReportId);
 
       if (error) throw error;
 
-      // Reseteamos estados locales para dejar la app limpia para el siguiente turno
+      // Limpiamos el checklist visualmente
+      setApartments(prev => prev.map(apt => {
+        if (apt.id === currentApartmentId) {
+          return { ...apt, checklist: resetChecklist(apt.checklist) };
+        }
+        return apt;
+      }));
+
+      // Reseteamos el sistema
       setServiceStarted(false);
       setStartTime(null);
       setWorkerName('');
       setCurrentApartmentId(null);
       setActiveReportId(null);
 
-      alert(`✓ Reporte enviado con éxito\nAseo: ${currentApartment.name}\nDuración total: ${duration}`);
+      alert(`✓ Reporte enviado\nAseo: ${currentApartment.name}\nDuración: ${duration}`);
     } catch (error) {
-      alert('Error de Supabase al enviar reporte final: ' + error.message);
+      alert('Error al cerrar reporte en Supabase: ' + error.message);
     }
   };
 
@@ -128,31 +170,47 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
     return reset;
   };
 
-  const calculateCompletionPercentage = () => {
-    if (!currentApartment) return 0;
-    const totalItems = Object.values(currentApartment.checklist).reduce((sum, zone) => sum + Object.keys(zone).length, 0);
-    const completedItems = Object.values(currentApartment.checklist).reduce((sum, zone) =>
+  const calculateCompletionPercentage = (apt = currentApartment) => {
+    if (!apt) return 0;
+    const totalItems = Object.values(apt.checklist).reduce((sum, zone) => sum + Object.keys(zone).length, 0);
+    const completedItems = Object.values(apt.checklist).reduce((sum, zone) => 
       sum + Object.values(zone).filter(Boolean).length, 0
     );
     return totalItems > 0 ? Math.round((completedItems / totalItems) * 100) : 0;
   };
 
-  const toggleChecklistItem = (zone, item) => {
-    setApartments(prev => prev.map(apt => {
-      if (apt.id === currentApartmentId) {
-        return {
-          ...apt,
-          checklist: {
-            ...apt.checklist,
-            [zone]: {
-              ...apt.checklist[zone],
-              [item]: !apt.checklist[zone][item]
-            }
-          }
-        };
+const toggleChecklistItem = async (zone, item) => {
+    // 1. Calculamos el nuevo estado local (para que el empleado vea el cambio inmediato)
+    const updatedApt = {
+      ...currentApartment,
+      checklist: {
+        ...currentApartment.checklist,
+        [zone]: {
+          ...currentApartment.checklist[zone],
+          [item]: !currentApartment.checklist[zone][item]
+        }
       }
-      return apt;
-    }));
+    };
+
+    // 2. Actualizamos el estado local
+    setApartments(prev => prev.map(apt => apt.id === currentApartmentId ? updatedApt : apt));
+
+    // 3. SI HAY UN SERVICIO EN CURSO (activeReportId), sincronizamos con Supabase
+    if (serviceStarted && activeReportId) {
+      const newCompletion = calculateCompletionPercentage(updatedApt); // Pasamos el apt actualizado
+      
+      try {
+        await supabase
+          .from('reportes_aseo')
+          .update({
+            checklist_zonas: updatedApt.checklist,
+            completion: newCompletion
+          })
+          .eq('id', activeReportId);
+      } catch (err) {
+        console.error("Error actualizando progreso en tiempo real:", err);
+      }
+    }
   };
 
   const updateInventory = (key, amount) => {
@@ -266,6 +324,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
 
       {/* CONTENIDO */}
       <div style={{ maxHeight: 'calc(100vh - 300px)', overflowY: 'auto' }}>
+
         {/* EMPLOYEE - HOME */}
         {userRole === 'employee' && currentTab === 'home' && !serviceStarted && (
           <div>
@@ -314,7 +373,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
             <div style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem', marginBottom: '1.5rem' }}>
               <h2 style={{ fontSize: '15px', fontWeight: 500, margin: '0 0 1rem 0' }}>📊 Inventario</h2>
               {Object.entries(currentApartment.inventory).map(([key, item]) => (
-                <div key={key} style={{ display: 'flex', alignItems: 'center', justifyBaycontent: 'space-between', padding: '0.75rem', backgroundColor: '#f5f5f5', borderRadius: '6px', gap: '1rem', marginBottom: '0.75rem' }}>
+                <div key={key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.75rem', backgroundColor: '#f5f5f5', borderRadius: '6px', gap: '1rem', marginBottom: '0.75rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
                     <span style={{ fontSize: '18px' }}>{item.icon}</span>
                     <span style={{ fontSize: '13px', fontWeight: 500 }}>{item.label}</span>
@@ -328,38 +387,46 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
               ))}
             </div>
 
-            {/* Progreso y Fin */}
             <div style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem' }}>
               <div style={{ marginBottom: '1rem' }}>
-                <div style={{ display: 'flex', justifyBaycontent: 'space-between', marginBottom: '0.5rem' }}><span style={{ fontSize: '13px', fontWeight: 500 }}>Progreso</span><span style={{ fontSize: '14px', fontWeight: 600, color: '#10b981' }}>{completionPercentage}%</span></div>
-                <div style={{ width: '100%', height: '6px', backgroundColor: '#f0f0f0', borderRadius: '6px', overflow: 'hidden' }}><div style={{ height: '100%', width: `${completionPercentage}%`, backgroundColor: '#10b981' }} /></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 500 }}>Progreso</span>
+                  <span style={{ fontSize: '14px', fontWeight: 600, color: '#10b981' }}>{completionPercentage}%</span>
+                </div>
+                <div style={{ width: '100%', height: '6px', backgroundColor: '#f0f0f0', borderRadius: '6px', overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${completionPercentage}%`, backgroundColor: '#10b981' }} />
+                </div>
               </div>
               <button onClick={submitReport} style={{ width: '100%', padding: '0.75rem', backgroundColor: '#3b82f6', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>✓ Finalizar y enviar reporte</button>
             </div>
           </div>
         )}
 
-        {/* OWNER - REPORTES */}
+        {/* OWNER - REPORTES (CONECTADO A SUPABASE) */}
         {userRole === 'owner' && currentTab === 'owner' && (
           <div>
             <h2 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '1.5rem' }}>📋 Reportes de Aseos</h2>
-            {apartments.length === 0 ? (
+
+            {isLoadingReports ? (
+              <p style={{ fontSize: '13px', color: '#666666', textAlign: 'center', padding: '2rem' }}>
+                🔄 Cargando reportes en tiempo real desde Supabase...
+              </p>
+            ) : apartments.length === 0 ? (
               <div style={{ backgroundColor: '#fef3c7', border: '1px solid #fcd34d', borderRadius: '8px', padding: '1rem', textAlign: 'center' }}>
                 <p style={{ fontSize: '13px', color: '#92400e', margin: 0 }}>No hay apartamentos</p>
               </div>
             ) : (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1rem' }}>
                 {apartments.map(apt => {
-                  // 1. FILTRADO RECOMIENDA: Buscamos en los reportes de Supabase los que correspondan a este apartamento
+                  // Filtramos los registros de Supabase cuya columna 'apartamento' coincida con la propiedad local
                   const aptReports = dbReports.filter(r => r.apartamento === apt.name);
 
                   return (
                     <div key={apt.id} style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem' }}>
                       <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '0 0 1rem 0', color: '#1a1a1a' }}>{apt.name}</h3>
 
-                      {/* 2. CAMBIO: Evaluamos el tamaño de los reportes traídos de la base de datos */}
                       {aptReports.length === 0 ? (
-                        <p style={{ fontSize: '13px', color: '#999999', textAlign: 'center', padding: '1rem 0', margin: 0 }}>Sin reportes</p>
+                        <p style={{ fontSize: '13px', color: '#999999', textAlign: 'center', padding: '1rem 0', margin: 0 }}>Sin reportes en base de datos</p>
                       ) : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
                           {aptReports.slice(0, 5).map((report, idx) => (
@@ -380,21 +447,15 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
                                 </span>
                               </div>
 
-                              {/* 3. MEJORA: Mostramos el texto consolidado de novedades (Trabajador, Duración, Notas) */}
-                              <p style={{ margin: '0.25rem 0', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.25rem', color: '#333333', lineHeight: '1.4' }}>
-                                📝 {report.novedades || 'Sin detalles registrados'}
-
-                                {/* BADGE EN TIEMPO REAL SI EL EMPLEADO ESTÁ LIMPIANDO EN ESE INSTANTE */}
-                                {report.estado === 'En Progreso' && (
-                                  <span style={{ backgroundColor: '#dbeafe', color: '#1e40af', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 'bold' }}>
-                                    🔄 En Progreso
-                                  </span>
-                                )}
+                              <p style={{ margin: '0.25rem 0', display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.25rem', color: '#222222' }}>
+                                📝 {report.novedades || 'Sin novedades registradas'}
                               </p>
 
-                              {/* 4. ALINEACIÓN: Mostramos la hora exacta del movimiento y el estado actual */}
-                              <div style={{ fontSize: '11px', color: '#666666', marginTop: '0.5rem', borderTop: '1px dashed #e0e0e0', paddingTop: '0.25rem' }}>
-                                🕒 <b>Hora registro:</b> {new Date(report.created_at).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })} | <b>Estado:</b> {report.estado}
+                              <div style={{ fontSize: '11px', color: '#666666', marginTop: '0.5rem', borderTop: '1px dashed #e0e0e0', paddingTop: '0.25rem', display: 'flex', justifyContent: 'space-between' }}>
+                                <span>🕒 {new Date(report.created_at).toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })}</span>
+                                <span style={{ fontWeight: 500, color: report.estado === 'En Progreso' ? '#3b82f6' : '#666666' }}>
+                                  {report.estado === 'En Progreso' ? '🔄 En Progreso' : '✅ Finalizado'}
+                                </span>
                               </div>
                             </div>
                           ))}
@@ -419,6 +480,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
                 <button onClick={createApartment} disabled={!newApartmentName.trim()} style={{ padding: '0.75rem 1.5rem', backgroundColor: newApartmentName.trim() ? '#3b82f6' : '#cccccc', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '13px', fontWeight: 600, cursor: newApartmentName.trim() ? 'pointer' : 'not-allowed' }}>Crear</button>
               </div>
             </div>
+
             <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '0 0 1rem 0' }}>📍 Mis Apartamentos</h3>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: '1rem' }}>
               {apartments.map(apt => (
@@ -500,105 +562,6 @@ const CleanCheckRPM = () => {
 
   useEffect(() => {
     document.title = 'Clean Check RPM - Revenue Property Management';
-  }, []);
-
-  // =========================================================
-  //  HOOK CRUCIAL: CARGA INICIAL Y ESCUCHA EN TIEMPO REAL
-  // =========================================================
-  useEffect(() => {
-    // A. Descargar el histórico de reportes existentes al abrir la app
-    const syncInitialData = async () => {
-      const { data, error } = await supabase
-        .from('reportes_aseo')
-        .select('*')
-        .order('id', { ascending: false }); // Los más recientes primero
-
-      if (!error && data) {
-        setApartments(prev => prev.map(apt => {
-          // Filtramos y transformamos las columnas snake_case de Postgres a tu camelCase de UI
-          const filtrados = data
-            .filter(row => row.apartamento === apt.name)
-            .map(row => ({
-              id: row.id,
-              date: row.date || row.created_at?.split('T')[0],
-              startTime: row.start_time,
-              endTime: row.end_time,
-              duration: row.duration,
-              completion: row.completion,
-              workerName: row.worker_name,
-              notes: row.notes,
-              estado: row.estado
-            }));
-          return { ...apt, reports: filtrados };
-        }));
-      }
-    };
-
-    syncInitialData();
-
-    // B. Suscripción por WebSockets (Realtime) habilitada para cualquier cambio (* INSERT/UPDATE)
-    const realtimeChannel = supabase
-      .channel('room-reportes')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'reportes_aseo' },
-        (payload) => {
-          const row = payload.new;
-
-          // Evento 1: Cuando el empleado le da a "Iniciar Servicio" (INSERT)
-          if (payload.eventType === 'INSERT') {
-            setApartments(prev => prev.map(apt => {
-              if (apt.name === row.apartamento) {
-                const yaExiste = apt.reports.some(r => r.id === row.id);
-                if (yaExiste) return apt;
-
-                const nuevoReporte = {
-                  id: row.id,
-                  date: row.date,
-                  startTime: row.start_time,
-                  endTime: row.end_time,
-                  duration: row.duration,
-                  completion: row.completion,
-                  workerName: row.worker_name,
-                  notes: row.notes,
-                  estado: row.estado
-                };
-                return { ...apt, reports: [nuevoReporte, ...apt.reports] };
-              }
-              return apt;
-            }));
-          }
-
-          // Evento 2: Cuando el empleado le da a "Finalizar" (UPDATE)
-          if (payload.eventType === 'UPDATE') {
-            setApartments(prev => prev.map(apt => {
-              if (apt.name === row.apartamento) {
-                return {
-                  ...apt,
-                  reports: apt.reports.map(r => r.id === row.id ? {
-                    id: row.id,
-                    date: row.date,
-                    startTime: row.start_time,
-                    endTime: row.end_time,
-                    duration: row.duration,
-                    completion: row.completion,
-                    workerName: row.worker_name,
-                    notes: row.notes,
-                    estado: row.estado
-                  } : r)
-                };
-              }
-              return apt;
-            }));
-          }
-        }
-      )
-      .subscribe();
-
-    // Cleanup: Desconectar el canal Realtime al desmontar la app
-    return () => {
-      supabase.removeChannel(realtimeChannel);
-    };
   }, []);
 
   const handleLogin = (role) => {
