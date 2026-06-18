@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
+// 1. Importamos el cliente de Supabase que configuraste
+import { supabase } from './supabaseClient';
 
 // ============ MÓDULO: CLEANING CHECK ============
-const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) => {
+const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout, supabaseReports, onReportSubmitted }) => {
   const [currentTab, setCurrentTab] = useState(userRole === 'owner' ? 'owner' : 'home');
   const [currentApartmentId, setCurrentApartmentId] = useState(null);
   const [workerName, setWorkerName] = useState('');
@@ -43,41 +45,68 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
     setCurrentTab('cleaning');
   };
 
-  const submitReport = () => {
+  // 2. Modificamos submitReport para que sea ASÍNCRONA y guarde en Supabase
+  const submitReport = async () => {
     if (!currentApartment) return;
 
     const now = new Date();
     const today = new Date().toISOString().split('T')[0];
     const completion = calculateCompletionPercentage();
     const duration = calculateDuration(startTime, now);
-    
-    const newReport = {
-      date: today,
+
+    // Estructuramos la metadata rica del reporte para guardarla en el campo 'novedades' como texto estructurado
+    const metadatosReporte = {
+      workerName: workerName,
       startTime: formatTime(startTime),
       endTime: formatTime(now),
       duration: duration,
       completion: completion,
-      workerName: workerName,
       notes: completion === 100 ? 'Limpieza completada' : 'Limpieza parcial'
     };
 
-    setApartments(prev => prev.map(apt => {
-      if (apt.id === currentApartmentId) {
-        return {
-          ...apt,
-          reports: [newReport, ...apt.reports].slice(0, 10),
-          checklist: resetChecklist(apt.checklist)
-        };
-      }
-      return apt;
-    }));
+    try {
+      // Guardar el registro real en la tabla de Supabase
+      const { error } = await supabase
+        .from('reportes_aseo')
+        .insert([
+          {
+            apartamento: currentApartment.name,
+            estado: completion === 100 ? 'Completado' : 'En Progreso',
+            checklist_zonas: currentApartment.checklist,
+            inventario: currentApartment.inventory,
+            novedades: JSON.stringify(metadatosReporte) // Guardamos todo el objeto como string JSON
+          }
+        ]);
 
-    setServiceStarted(false);
-    setStartTime(null);
-    setWorkerName('');
-    setCurrentApartmentId(null);
+      if (error) throw error;
 
-    alert(`✓ Reporte enviado\nAseo: ${currentApartment.name}\nTrabajador: ${workerName}\nDuración: ${duration}`);
+      // Si todo sale bien en la base de datos, limpiamos el estado local de la app
+      setApartments(prev => prev.map(apt => {
+        if (apt.id === currentApartmentId) {
+          return {
+            ...apt,
+            checklist: resetChecklist(apt.checklist)
+          };
+        }
+        return apt;
+      }));
+
+      alert(`✓ Reporte enviado a Supabase con éxito.\nPropiedad: ${currentApartment.name}\nDuración: ${duration}`);
+
+      // Notificar a la app principal para refrescar la lista del propietario si está viendo
+      if (onReportSubmitted) onReportSubmitted();
+
+      // Resetear estados del flujo del empleado
+      setServiceStarted(false);
+      setStartTime(null);
+      setWorkerName('');
+      setCurrentApartmentId(null);
+      setCurrentTab('home');
+
+    } catch (err) {
+      console.error('Error enviando datos a Supabase:', err);
+      alert('❌ Error de conexión al guardar el reporte en Supabase. Inténtalo de nuevo.');
+    }
   };
 
   const resetChecklist = (checklist) => {
@@ -94,7 +123,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
   const calculateCompletionPercentage = () => {
     if (!currentApartment) return 0;
     const totalItems = Object.values(currentApartment.checklist).reduce((sum, zone) => sum + Object.keys(zone).length, 0);
-    const completedItems = Object.values(currentApartment.checklist).reduce((sum, zone) => 
+    const completedItems = Object.values(currentApartment.checklist).reduce((sum, zone) =>
       sum + Object.values(zone).filter(Boolean).length, 0
     );
     return totalItems > 0 ? Math.round((completedItems / totalItems) * 100) : 0;
@@ -143,7 +172,12 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
       id: newId,
       name: newApartmentName,
       checklist: { kitchen: {}, bathroom: {}, bedroom: {}, common: {} },
-      inventory: {},
+      inventory: {
+        towels: { label: 'Toallas limpias', icon: '🏖️', min: 5, current: 0 },
+        toilet_paper: { label: 'Papel higiénico', icon: '📄', min: 8, current: 0 },
+        soap_shampoo: { label: 'Jabón/Shampoo', icon: '🧴', min: 3, current: 0 },
+        coffee_water: { label: 'Café/Agua', icon: '☕', min: 6, current: 0 }
+      },
       reports: []
     };
     setApartments([...apartments, newApartment]);
@@ -211,7 +245,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
 
   return (
     <div>
-      {/* Tabs - Mostrar solo según rol */}
+      {/* Tabs */}
       <div style={{
         display: 'flex',
         gap: '0.5rem',
@@ -305,11 +339,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
         {/* EMPLOYEE - HOME */}
         {userRole === 'employee' && currentTab === 'home' && !serviceStarted && (
           <div>
-            <h2 style={{
-              fontSize: '16px',
-              fontWeight: 600,
-              marginBottom: '1rem'
-            }}>
+            <h2 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '1rem' }}>
               📍 Selecciona un apartamento
             </h2>
 
@@ -332,18 +362,10 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
                     transition: 'all 0.2s'
                   }}
                 >
-                  <h3 style={{
-                    fontSize: '15px',
-                    fontWeight: 600,
-                    margin: '0 0 0.5rem 0'
-                  }}>
+                  <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '0 0 0.5rem 0' }}>
                     {apt.name}
                   </h3>
-                  <p style={{
-                    fontSize: '12px',
-                    color: '#666666',
-                    margin: '0'
-                  }}>
+                  <p style={{ fontSize: '12px', color: '#666666', margin: '0' }}>
                     Items: {Object.keys(apt.inventory).length}
                   </p>
                 </div>
@@ -357,21 +379,12 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
                 borderRadius: '8px',
                 padding: '1.5rem'
               }}>
-                <h3 style={{
-                  fontSize: '15px',
-                  fontWeight: 600,
-                  margin: '0 0 1rem 0'
-                }}>
+                <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '0 0 1rem 0' }}>
                   👤 Datos del trabajador
                 </h3>
 
                 <div style={{ marginBottom: '1rem' }}>
-                  <label style={{
-                    fontSize: '13px',
-                    fontWeight: 500,
-                    display: 'block',
-                    marginBottom: '0.5rem'
-                  }}>
+                  <label style={{ fontSize: '13px', fontWeight: 500, display: 'block', marginBottom: '0.5rem' }}>
                     Tu nombre
                   </label>
                   <input
@@ -415,11 +428,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
         {/* EMPLOYEE - CLEANING */}
         {userRole === 'employee' && currentTab === 'cleaning' && serviceStarted && currentApartment && (
           <div>
-            <h2 style={{
-              fontSize: '15px',
-              fontWeight: 600,
-              marginBottom: '1rem'
-            }}>
+            <h2 style={{ fontSize: '15px', fontWeight: 600, marginBottom: '1rem' }}>
               📋 Checklist de aseo
             </h2>
 
@@ -432,44 +441,20 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
               {Object.entries(zones).map(([zoneKey, zone]) => (
                 <div
                   key={zoneKey}
-                  style={{
-                    backgroundColor: '#ffffff',
-                    border: '1px solid #e0e0e0',
-                    borderRadius: '8px',
-                    padding: '1rem'
-                  }}
+                  style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem' }}
                 >
-                  <p style={{
-                    fontSize: '14px',
-                    fontWeight: 500,
-                    margin: '0 0 0.75rem 0'
-                  }}>
+                  <p style={{ fontSize: '14px', fontWeight: 500, margin: '0 0 0.75rem 0' }}>
                     {zone.icon} {zone.name}
                   </p>
                   {Object.entries(currentApartment.checklist[zoneKey] || {}).map(([item, completed]) => (
-                    <label key={item} style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.5rem',
-                      cursor: 'pointer',
-                      fontSize: '13px',
-                      marginBottom: '0.5rem'
-                    }}>
+                    <label key={item} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '13px', marginBottom: '0.5rem' }}>
                       <input
                         type="checkbox"
                         checked={completed}
                         onChange={() => toggleChecklistItem(zoneKey, item)}
-                        style={{
-                          width: '16px',
-                          height: '16px',
-                          cursor: 'pointer',
-                          accentColor: '#10b981'
-                        }}
+                        style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: '#10b981' }}
                       />
-                      <span style={{
-                        textDecoration: completed ? 'line-through' : 'none',
-                        color: completed ? '#999999' : '#1a1a1a'
-                      }}>
+                      <span style={{ textDecoration: completed ? 'line-through' : 'none', color: completed ? '#999999' : '#1a1a1a' }}>
                         {item}
                       </span>
                     </label>
@@ -478,149 +463,41 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
               ))}
             </div>
 
-            <div style={{
-              backgroundColor: '#ffffff',
-              border: '1px solid #e0e0e0',
-              borderRadius: '8px',
-              padding: '1rem',
-              marginBottom: '1.5rem'
-            }}>
-              <h2 style={{
-                fontSize: '15px',
-                fontWeight: 500,
-                margin: '0 0 1rem 0'
-              }}>
+            <div style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem', marginBottom: '1.5rem' }}>
+              <h2 style={{ fontSize: '15px', fontWeight: 500, margin: '0 0 1rem 0' }}>
                 📊 Inventario
               </h2>
-              
+
               {Object.entries(currentApartment.inventory).map(([key, item]) => (
-                <div
-                  key={key}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    padding: '0.75rem',
-                    backgroundColor: '#f5f5f5',
-                    borderRadius: '6px',
-                    gap: '1rem',
-                    marginBottom: '0.75rem'
-                  }}
-                >
+                <div key={key} style={{ display: 'flex', alignItems: 'center', justifyValues: 'space-between', padding: '0.75rem', backgroundColor: '#f5f5f5', borderRadius: '6px', gap: '1rem', marginBottom: '0.75rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
                     <span style={{ fontSize: '18px' }}>{item.icon}</span>
-                    <span style={{
-                      fontSize: '13px',
-                      fontWeight: 500
-                    }}>
-                      {item.label}
-                    </span>
+                    <span style={{ fontSize: '13px', fontWeight: 500 }}>{item.label}</span>
                   </div>
-                  
-                  <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.5rem'
-                  }}>
-                    <button
-                      onClick={() => updateInventory(key, -1)}
-                      style={{
-                        width: '28px',
-                        height: '28px',
-                        border: '1px solid #d0d0d0',
-                        backgroundColor: '#ffffff',
-                        borderRadius: '6px',
-                        cursor: 'pointer',
-                        fontSize: '16px'
-                      }}
-                    >
-                      −
-                    </button>
-                    
-                    <span style={{
-                      fontSize: '15px',
-                      fontWeight: 600,
-                      minWidth: '24px',
-                      textAlign: 'center'
-                    }}>
-                      {item.current}
-                    </span>
-                    
-                    <button
-                      onClick={() => updateInventory(key, 1)}
-                      style={{
-                        width: '28px',
-                        height: '28px',
-                        border: '1px solid #d0d0d0',
-                        backgroundColor: '#ffffff',
-                        borderRadius: '6px',
-                        cursor: 'pointer',
-                        fontSize: '16px'
-                      }}
-                    >
-                      +
-                    </button>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <button onClick={() => updateInventory(key, -1)} style={{ width: '28px', height: '28px', border: '1px solid #d0d0d0', backgroundColor: '#ffffff', borderRadius: '6px', cursor: 'pointer', fontSize: '16px' }}>−</button>
+                    <span style={{ fontSize: '15px', fontWeight: 600, minWidth: '24px', textAlign: 'center' }}>{item.current}</span>
+                    <button onClick={() => updateInventory(key, 1)} style={{ width: '28px', height: '28px', border: '1px solid #d0d0d0', backgroundColor: '#ffffff', borderRadius: '6px', cursor: 'pointer', fontSize: '16px' }}>+</button>
                   </div>
                 </div>
               ))}
             </div>
 
-            <div style={{
-              backgroundColor: '#ffffff',
-              border: '1px solid #e0e0e0',
-              borderRadius: '8px',
-              padding: '1rem'
-            }}>
+            <div style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem' }}>
               <div style={{ marginBottom: '1rem' }}>
-                <div style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  marginBottom: '0.5rem'
-                }}>
-                  <span style={{
-                    fontSize: '13px',
-                    fontWeight: 500
-                  }}>
-                    Progreso
-                  </span>
-                  <span style={{
-                    fontSize: '14px',
-                    fontWeight: 600,
-                    color: '#10b981'
-                  }}>
-                    {completionPercentage}%
-                  </span>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                  <span style={{ fontSize: '13px', fontWeight: 500 }}>Progreso</span>
+                  <span style={{ fontSize: '14px', fontWeight: 600, color: '#10b981' }}>{completionPercentage}%</span>
                 </div>
-                <div style={{
-                  width: '100%',
-                  height: '6px',
-                  backgroundColor: '#f0f0f0',
-                  borderRadius: '6px',
-                  overflow: 'hidden'
-                }}>
-                  <div
-                    style={{
-                      height: '100%',
-                      width: `${completionPercentage}%`,
-                      backgroundColor: '#10b981'
-                    }}
-                  />
+                <div style={{ width: '100%', height: '6px', backgroundColor: '#f0f0f0', borderRadius: '6px', overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${completionPercentage}%`, backgroundColor: '#10b981' }} />
                 </div>
               </div>
 
               <button
                 onClick={submitReport}
-                style={{
-                  width: '100%',
-                  padding: '0.75rem',
-                  backgroundColor: '#3b82f6',
-                  color: '#ffffff',
-                  border: 'none',
-                  borderRadius: '6px',
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  cursor: 'pointer'
-                }}
+                style={{ width: '100%', padding: '0.75rem', backgroundColor: '#3b82f6', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}
               >
                 ✓ Finalizar y enviar reporte
               </button>
@@ -628,114 +505,75 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
           </div>
         )}
 
-        {/* OWNER - REPORTES */}
+        {/* OWNER - REPORTES (Conectado a la data de Supabase) */}
         {userRole === 'owner' && currentTab === 'owner' && (
           <div>
-            <h2 style={{
-              fontSize: '16px',
-              fontWeight: 600,
-              marginBottom: '1.5rem'
-            }}>
-              📋 Reportes de Aseos
+            <h2 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '1.5rem' }}>
+              📋 Reportes de Aseos (Desde Supabase)
             </h2>
 
             {apartments.length === 0 ? (
-              <div style={{
-                backgroundColor: '#fef3c7',
-                border: '1px solid #fcd34d',
-                borderRadius: '8px',
-                padding: '1rem',
-                textAlign: 'center'
-              }}>
-                <p style={{
-                  fontSize: '13px',
-                  color: '#92400e',
-                  margin: 0
-                }}>
-                  No hay apartamentos
-                </p>
+              <div style={{ backgroundColor: '#fef3c7', border: '1px solid #fcd34d', borderRadius: '8px', padding: '1rem', textAlign: 'center' }}>
+                <p style={{ fontSize: '13px', color: '#92400e', margin: 0 }}>No hay apartamentos</p>
               </div>
             ) : (
-              <div style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))',
-                gap: '1rem'
-              }}>
-                {apartments.map(apt => (
-                  <div
-                    key={apt.id}
-                    style={{
-                      backgroundColor: '#ffffff',
-                      border: '1px solid #e0e0e0',
-                      borderRadius: '8px',
-                      padding: '1rem'
-                    }}
-                  >
-                    <h3 style={{
-                      fontSize: '15px',
-                      fontWeight: 600,
-                      margin: '0 0 1rem 0',
-                      color: '#1a1a1a'
-                    }}>
-                      {apt.name}
-                    </h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1rem' }}>
+                {apartments.map(apt => {
+                  // Filtramos los reportes que coincidan con este apartamento
+                  const filtrados = supabaseReports.filter(r => r.apartamento === apt.name);
 
-                    {apt.reports.length === 0 ? (
-                      <p style={{
-                        fontSize: '13px',
-                        color: '#999999',
-                        textAlign: 'center',
-                        padding: '1rem 0',
-                        margin: 0
-                      }}>
-                        Sin reportes
-                      </p>
-                    ) : (
-                      <div style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: '0.75rem'
-                      }}>
-                        {apt.reports.slice(0, 3).map((report, idx) => (
-                          <div
-                            key={idx}
-                            style={{
-                              padding: '0.75rem',
-                              backgroundColor: '#f5f5f5',
-                              borderRadius: '6px',
-                              borderLeft: `3px solid ${report.completion === 100 ? '#10b981' : '#f59e0b'}`,
-                              fontSize: '12px'
-                            }}
-                          >
-                            <div style={{
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              marginBottom: '0.5rem'
-                            }}>
-                              <strong>{new Date(report.date).toLocaleDateString('es-CO')}</strong>
-                              <span style={{
-                                color: report.completion === 100 ? '#10b981' : '#f59e0b',
-                                fontWeight: 600
-                              }}>
-                                {report.completion}%
-                              </span>
-                            </div>
-                            <p style={{ margin: '0.25rem 0' }}>👤 {report.workerName}</p>
-                            <div style={{
-                              display: 'grid',
-                              gridTemplateColumns: '1fr 1fr',
-                              gap: '0.5rem',
-                              fontSize: '11px'
-                            }}>
-                              <div><strong>Inicio:</strong> {report.startTime}</div>
-                              <div><strong>Fin:</strong> {report.endTime}</div>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
+                  return (
+                    <div key={apt.id} style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem' }}>
+                      <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '0 0 1rem 0', color: '#1a1a1a' }}>
+                        {apt.name}
+                      </h3>
+
+                      {filtrados.length === 0 ? (
+                        <p style={{ fontSize: '13px', color: '#999999', textAlign: 'center', padding: '1rem 0', margin: 0 }}>
+                          Sin reportes en base de datos
+                        </p>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                          {filtrados.slice(0, 5).map((dbReport) => {
+                            // Desempaquetamos de forma segura el JSON guardado en 'novedades'
+                            let detalles = {};
+                            try {
+                              detalles = JSON.parse(dbReport.novedades || '{}');
+                            } catch (e) {
+                              detalles = { workerName: 'Desconocido', completion: 0, notes: dbReport.novedades };
+                            }
+
+                            return (
+                              <div
+                                key={dbReport.id}
+                                style={{
+                                  padding: '0.75rem',
+                                  backgroundColor: '#f5f5f5',
+                                  borderRadius: '6px',
+                                  borderLeft: `3px solid ${dbReport.estado === 'Completado' ? '#10b981' : '#f59e0b'}`,
+                                  fontSize: '12px'
+                                }}
+                              >
+                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                                  <strong>{new Date(dbReport.created_at).toLocaleDateString('es-CO')}</strong>
+                                  <span style={{ color: dbReport.estado === 'Completado' ? '#10b981' : '#f59e0b', fontWeight: 600 }}>
+                                    {detalles.completion || 0}%
+                                  </span>
+                                </div>
+                                <p style={{ margin: '0.25rem 0' }}>👤 {detalles.workerName || 'Anónimo'}</p>
+                                <p style={{ margin: '0.25rem 0', color: '#555' }}>⏱ Duración: {detalles.duration || '--'}</p>
+                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '11px', marginTop: '0.25rem' }}>
+                                  <div><strong>Inicio:</strong> {detalles.startTime || '--'}</div>
+                                  <div><strong>Fin:</strong> {detalles.endTime || '--'}</div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -744,89 +582,31 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
         {/* OWNER - CONFIG */}
         {userRole === 'owner' && currentTab === 'config' && (
           <div>
-            <h2 style={{
-              fontSize: '16px',
-              fontWeight: 600,
-              marginBottom: '1rem'
-            }}>
-              ⚙️ Configuración
-            </h2>
-
-            <div style={{
-              backgroundColor: '#ffffff',
-              border: '1px solid #e0e0e0',
-              borderRadius: '8px',
-              padding: '1rem',
-              marginBottom: '1.5rem'
-            }}>
-              <h3 style={{
-                fontSize: '14px',
-                fontWeight: 600,
-                margin: '0 0 1rem 0'
-              }}>
-                ➕ Nuevo apartamento
-              </h3>
-
-              <div style={{
-                display: 'flex',
-                gap: '0.75rem'
-              }}>
+            <h2 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '1rem' }}>⚙️ Configuración</h2>
+            <div style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem', marginBottom: '1.5rem' }}>
+              <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '0 0 1rem 0' }}>➕ Nuevo apartamento</h3>
+              <div style={{ display: 'flex', gap: '0.75rem' }}>
                 <input
                   type="text"
                   value={newApartmentName}
                   onChange={(e) => setNewApartmentName(e.target.value)}
                   placeholder="Ej: Apartamento C"
-                  style={{
-                    flex: 1,
-                    padding: '0.75rem',
-                    border: '1px solid #d0d0d0',
-                    borderRadius: '6px',
-                    fontSize: '13px',
-                    boxSizing: 'border-box'
-                  }}
+                  style={{ flex: 1, padding: '0.75rem', border: '1px solid #d0d0d0', borderRadius: '6px', fontSize: '13px', boxSizing: 'border-box' }}
                 />
                 <button
                   onClick={createApartment}
                   disabled={!newApartmentName.trim()}
-                  style={{
-                    padding: '0.75rem 1.5rem',
-                    backgroundColor: newApartmentName.trim() ? '#3b82f6' : '#cccccc',
-                    color: '#ffffff',
-                    border: 'none',
-                    borderRadius: '6px',
-                    fontSize: '13px',
-                    fontWeight: 600,
-                    cursor: newApartmentName.trim() ? 'pointer' : 'not-allowed'
-                  }}
+                  style={{ padding: '0.75rem 1.5rem', backgroundColor: newApartmentName.trim() ? '#3b82f6' : '#cccccc', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '13px', fontWeight: 600, cursor: newApartmentName.trim() ? 'pointer' : 'not-allowed' }}
                 >
                   Crear
                 </button>
               </div>
             </div>
 
-            <h3 style={{
-              fontSize: '15px',
-              fontWeight: 600,
-              margin: '0 0 1rem 0'
-            }}>
-              📍 Mis Apartamentos
-            </h3>
-
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))',
-              gap: '1rem'
-            }}>
+            <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '0 0 1rem 0' }}>📍 Mis Apartamentos</h3>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: '1rem' }}>
               {apartments.map(apt => (
-                <div
-                  key={apt.id}
-                  style={{
-                    backgroundColor: '#ffffff',
-                    border: '1px solid #e0e0e0',
-                    borderRadius: '8px',
-                    padding: '1rem'
-                  }}
-                >
+                <div key={apt.id} style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem' }}>
                   {editingNameId === apt.id ? (
                     <div style={{ marginBottom: '1rem' }}>
                       <input
@@ -834,117 +614,20 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
                         value={editingNameValue}
                         onChange={(e) => setEditingNameValue(e.target.value)}
                         placeholder="Nuevo nombre"
-                        style={{
-                          width: '100%',
-                          padding: '0.5rem',
-                          border: '1px solid #d0d0d0',
-                          borderRadius: '6px',
-                          fontSize: '13px',
-                          marginBottom: '0.5rem',
-                          boxSizing: 'border-box'
-                        }}
+                        style={{ width: '100%', padding: '0.5rem', border: '1px solid #d0d0d0', borderRadius: '6px', fontSize: '13px', marginBottom: '0.5rem', boxSizing: 'border-box' }}
                       />
-                      <div style={{
-                        display: 'flex',
-                        gap: '0.5rem'
-                      }}>
-                        <button
-                          onClick={() => updateApartmentName(apt.id, editingNameValue)}
-                          style={{
-                            flex: 1,
-                            padding: '0.5rem',
-                            backgroundColor: '#10b981',
-                            color: '#ffffff',
-                            border: 'none',
-                            borderRadius: '6px',
-                            fontSize: '12px',
-                            fontWeight: 500,
-                            cursor: 'pointer'
-                          }}
-                        >
-                          Guardar
-                        </button>
-                        <button
-                          onClick={() => {
-                            setEditingNameId(null);
-                            setEditingNameValue('');
-                          }}
-                          style={{
-                            flex: 1,
-                            padding: '0.5rem',
-                            backgroundColor: '#f0f0f0',
-                            color: '#1a1a1a',
-                            border: 'none',
-                            borderRadius: '6px',
-                            fontSize: '12px',
-                            fontWeight: 500,
-                            cursor: 'pointer'
-                          }}
-                        >
-                          Cancelar
-                        </button>
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <button onClick={() => updateApartmentName(apt.id, editingNameValue)} style={{ flex: 1, padding: '0.5rem', backgroundColor: '#10b981', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 500, cursor: 'pointer' }}>Guardar</button>
+                        <button onClick={() => { setEditingNameId(null); setEditingNameValue(''); }} style={{ flex: 1, padding: '0.5rem', backgroundColor: '#f0f0f0', color: '#1a1a1a', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 500, cursor: 'pointer' }}>Cancelar</button>
                       </div>
                     </div>
                   ) : (
                     <>
-                      <h4 style={{
-                        fontSize: '14px',
-                        fontWeight: 600,
-                        margin: '0 0 0.75rem 0',
-                        color: '#1a1a1a'
-                      }}>
-                        {apt.name}
-                      </h4>
-                      <p style={{
-                        fontSize: '12px',
-                        color: '#666666',
-                        margin: '0 0 1rem 0'
-                      }}>
-                        Items: {Object.keys(apt.inventory).length} | Reportes: {apt.reports.length}
-                      </p>
-                      <div style={{
-                        display: 'flex',
-                        gap: '0.5rem'
-                      }}>
-                        <button
-                          onClick={() => {
-                            setEditingNameId(apt.id);
-                            setEditingNameValue(apt.name);
-                          }}
-                          style={{
-                            flex: 1,
-                            padding: '0.5rem',
-                            backgroundColor: '#f0f4ff',
-                            color: '#3b82f6',
-                            border: '1px solid #bfdbfe',
-                            borderRadius: '6px',
-                            fontSize: '12px',
-                            fontWeight: 500,
-                            cursor: 'pointer'
-                          }}
-                        >
-                          ✏️ Editar
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (window.confirm(`¿Eliminar ${apt.name}?`)) {
-                              deleteApartment(apt.id);
-                            }
-                          }}
-                          style={{
-                            flex: 1,
-                            padding: '0.5rem',
-                            backgroundColor: '#fecaca',
-                            color: '#991b1b',
-                            border: 'none',
-                            borderRadius: '6px',
-                            fontSize: '12px',
-                            fontWeight: 500,
-                            cursor: 'pointer'
-                          }}
-                        >
-                          🗑️
-                        </button>
+                      <h4 style={{ fontSize: '14px', fontWeight: 600, margin: '0 0 0.75rem 0', color: '#1a1a1a' }}>{apt.name}</h4>
+                      <p style={{ fontSize: '12px', color: '#666666', margin: '0 0 1rem 0' }}>Items: {Object.keys(apt.inventory).length}</p>
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <button onClick={() => { setEditingNameId(apt.id); setEditingNameValue(apt.name); }} style={{ flex: 1, padding: '0.5rem', backgroundColor: '#f0f4ff', color: '#3b82f6', border: '1px solid #bfdbfe', borderRadius: '6px', fontSize: '12px', fontWeight: 500, cursor: 'pointer' }}>✏️ Editar</button>
+                        <button onClick={() => { if (window.confirm(`¿Eliminar ${apt.name}?`)) deleteApartment(apt.id); }} style={{ flex: 1, padding: '0.5rem', backgroundColor: '#fecaca', color: '#991b1b', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 500, cursor: 'pointer' }}>🗑️</button>
                       </div>
                     </>
                   )}
@@ -959,56 +642,15 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
 };
 
 // ============ MÓDULO: REVENUE ANALYSIS (PLACEHOLDER) ============
-const RevenueAnalysisModule = ({ onLogout }) => {
+const RevenueAnalysisModule = () => {
   return (
-    <div style={{
-      backgroundColor: '#ffffff',
-      border: '1px solid #e0e0e0',
-      borderRadius: '12px',
-      padding: '3rem',
-      textAlign: 'center',
-      maxWidth: '600px',
-      margin: '2rem auto'
-    }}>
-      <div style={{
-        fontSize: '48px',
-        marginBottom: '1rem'
-      }}>
-        📊
-      </div>
-      <h2 style={{
-        fontSize: '24px',
-        fontWeight: 600,
-        margin: '0 0 1rem 0',
-        color: '#1a1a1a'
-      }}>
-        Revenue Analysis
-      </h2>
-      <p style={{
-        fontSize: '14px',
-        color: '#666666',
-        margin: '0 0 2rem 0',
-        lineHeight: 1.6
-      }}>
-        Este módulo está en desarrollo. Aquí se incluirán análisis de ingresos, reportes de ocupación, métricas de desempeño y más.
-      </p>
-      <div style={{
-        backgroundColor: '#f0f4ff',
-        border: '1px solid #bfdbfe',
-        borderRadius: '8px',
-        padding: '1.5rem'
-      }}>
-        <p style={{
-          fontSize: '13px',
-          color: '#1e40af',
-          margin: 0,
-          lineHeight: 1.6
-        }}>
-          <strong>Estado:</strong> Próximos pasos<br/>
-          • Integración con datos de ocupación<br/>
-          • Cálculos de ingresos por propiedad<br/>
-          • Gráficas de tendencias<br/>
-          • Reportes exportables
+    <div style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '12px', padding: '3rem', textAlign: 'center', maxWidth: '600px', margin: '2rem auto' }}>
+      <div style={{ fontSize: '48px', marginBottom: '1rem' }}>📊</div>
+      <h2 style={{ fontSize: '24px', fontWeight: 600, margin: '0 0 1rem 0', color: '#1a1a1a' }}>Revenue Analysis</h2>
+      <p style={{ fontSize: '14px', color: '#666666', margin: '0 0 2rem 0', lineHeight: 1.6 }}>Este módulo está en desarrollo. Aquí se incluirán análisis de ingresos, reportes de ocupación, métricas de desempeño y más.</p>
+      <div style={{ backgroundColor: '#f0f4ff', border: '1px solid #bfdbfe', borderRadius: '8px', padding: '1.5rem' }}>
+        <p style={{ fontSize: '13px', color: '#1e40af', margin: 0, lineHeight: 1.6 }}>
+          <strong>Estado:</strong> Próximos pasos<br />• Integración con datos de ocupación<br />• Cálculos de ingresos por propiedad<br />• Gráficas de tendencias<br />• Reportes exportables
         </p>
       </div>
     </div>
@@ -1023,35 +665,18 @@ const CleanCheckRPM = () => {
   const [loginPassword, setLoginPassword] = useState('');
   const [currentModule, setCurrentModule] = useState('cleaning-check');
 
+  // 3. Nuevo estado para almacenar los reportes traídos de Supabase
+  const [supabaseReports, setSupabaseReports] = useState([]);
+
   const [apartments, setApartments] = useState([
     {
       id: 1,
       name: 'Apartamento A',
       checklist: {
-        kitchen: {
-          'Pisos limpios': false,
-          'Encimera desinfectada': false,
-          'Fregadero lavado': false,
-          'Electrodomésticos secos': false
-        },
-        bathroom: {
-          'Ducha/Bañera limpia': false,
-          'Espejo desempañado': false,
-          'Grifo pulido': false,
-          'Piso secar': false
-        },
-        bedroom: {
-          'Cama tendida': false,
-          'Piso barrido': false,
-          'Superficies sin polvo': false,
-          'Ventanas limpias': false
-        },
-        common: {
-          'Sofá aspirado': false,
-          'Mesitas limpias': false,
-          'Basura retirada': false,
-          'Aire fresco': false
-        }
+        kitchen: { 'Pisos limpios': false, 'Encimera desinfectada': false, 'Fregadero lavado': false, 'Electrodomésticos secos': false },
+        bathroom: { 'Ducha/Bañera limpia': false, 'Espejo desempañado': false, 'Grifo pulido': false, 'Piso secar': false },
+        bedroom: { 'Cama tendida': false, 'Piso barrido': false, 'Superficies sin polvo': false, 'Ventanas limpias': false },
+        common: { 'Sofá aspirado': false, 'Mesitas limpias': false, 'Basura retirada': false, 'Aire fresco': false }
       },
       inventory: {
         towels: { label: 'Toallas limpias', icon: '🏖️', min: 5, current: 8 },
@@ -1059,17 +684,7 @@ const CleanCheckRPM = () => {
         soap_shampoo: { label: 'Jabón/Shampoo', icon: '🧴', min: 3, current: 5 },
         coffee_water: { label: 'Café/Agua', icon: '☕', min: 6, current: 10 }
       },
-      reports: [
-        {
-          date: new Date().toISOString().split('T')[0],
-          startTime: '09:30',
-          endTime: '10:45',
-          duration: '1h 15min',
-          completion: 100,
-          workerName: 'María García',
-          notes: 'Limpieza completa realizada'
-        }
-      ]
+      reports: []
     }
   ]);
 
@@ -1082,13 +697,35 @@ const CleanCheckRPM = () => {
     document.title = 'Clean Check RPM - Revenue Property Management';
   }, []);
 
+  // 4. Función para descargar los reportes reales de Supabase
+  const fetchReportsFromSupabase = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('reportes_aseo')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setSupabaseReports(data || []);
+    } catch (err) {
+      console.error('Error cargando reportes desde Supabase:', err);
+    }
+  };
+
+  // 5. Efecto para actualizar reportes automáticamente al loguearse o cambiar pestañas
+  useEffect(() => {
+    if (isLoggedIn && userRole === 'owner') {
+      fetchReportsFromSupabase();
+    }
+  }, [isLoggedIn, userRole, currentModule]);
+
   const handleLogin = (role) => {
     if (loginUsername === credentials[role].username && loginPassword === credentials[role].password) {
       setIsLoggedIn(true);
       setUserRole(role);
       setLoginUsername('');
       setLoginPassword('');
-      setCurrentModule(role === 'employee' ? 'cleaning-check' : 'cleaning-check');
+      setCurrentModule('cleaning-check');
     } else {
       alert('Usuario o contraseña incorrectos');
     }
@@ -1105,168 +742,36 @@ const CleanCheckRPM = () => {
   // PANTALLA DE LOGIN
   if (!isLoggedIn) {
     return (
-      <div style={{
-        fontFamily: 'system-ui, -apple-system, sans-serif',
-        backgroundColor: '#f8f8f8',
-        minHeight: '100vh',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: '1rem'
-      }}>
-        <div style={{
-          backgroundColor: '#ffffff',
-          borderRadius: '12px',
-          boxShadow: '0 10px 25px rgba(0,0,0,0.1)',
-          padding: '2rem',
-          maxWidth: '400px',
-          width: '100%'
-        }}>
-          <div style={{
-            textAlign: 'center',
-            marginBottom: '2rem'
-          }}>
-            <div style={{
-              fontSize: '48px',
-              marginBottom: '1rem'
-            }}>
-              ✓
-            </div>
-            <h1 style={{
-              fontSize: '28px',
-              fontWeight: 700,
-              margin: '0 0 0.5rem 0',
-              color: '#1a1a1a'
-            }}>
-              Clean Check RPM
-            </h1>
-            <p style={{
-              fontSize: '14px',
-              color: '#666666',
-              margin: 0
-            }}>
-              Revenue Property Management System
-            </p>
+      <div style={{ fontFamily: 'system-ui, -apple-system, sans-serif', backgroundColor: '#f8f8f8', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+        <div style={{ backgroundColor: '#ffffff', borderRadius: '12px', boxShadow: '0 10px 25px rgba(0,0,0,0.1)', padding: '2rem', maxWidth: '400px', width: '100%' }}>
+          <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
+            <div style={{ fontSize: '48px', marginBottom: '1rem' }}>✓</div>
+            <h1 style={{ fontSize: '28px', fontWeight: 700, margin: '0 0 0.5rem 0', color: '#1a1a1a' }}>Clean Check RPM</h1>
+            <p style={{ fontSize: '14px', color: '#666666', margin: 0 }}>Revenue Property Management System</p>
           </div>
 
-          <div style={{
-            marginBottom: '2rem'
-          }}>
+          <div style={{ marginBottom: '2rem' }}>
             <div style={{ marginBottom: '1rem' }}>
-              <label style={{
-                display: 'block',
-                fontSize: '13px',
-                fontWeight: 500,
-                marginBottom: '0.5rem',
-                color: '#1a1a1a'
-              }}>
-                Usuario
-              </label>
-              <input
-                type="text"
-                value={loginUsername}
-                onChange={(e) => setLoginUsername(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && handleLogin('employee')}
-                placeholder="Ingresa tu usuario"
-                style={{
-                  width: '100%',
-                  padding: '0.75rem',
-                  border: '1px solid #d0d0d0',
-                  borderRadius: '6px',
-                  fontSize: '13px',
-                  boxSizing: 'border-box'
-                }}
-              />
+              <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '0.5rem', color: '#1a1a1a' }}>Usuario</label>
+              <input type="text" value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && handleLogin('employee')} placeholder="Ingresa tu usuario" style={{ width: '100%', padding: '0.75rem', border: '1px solid #d0d0d0', borderRadius: '6px', fontSize: '13px', boxSizing: 'border-box' }} />
             </div>
 
             <div style={{ marginBottom: '1.5rem' }}>
-              <label style={{
-                display: 'block',
-                fontSize: '13px',
-                fontWeight: 500,
-                marginBottom: '0.5rem',
-                color: '#1a1a1a'
-              }}>
-                Contraseña
-              </label>
-              <input
-                type="password"
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && handleLogin('employee')}
-                placeholder="Ingresa tu contraseña"
-                style={{
-                  width: '100%',
-                  padding: '0.75rem',
-                  border: '1px solid #d0d0d0',
-                  borderRadius: '6px',
-                  fontSize: '13px',
-                  boxSizing: 'border-box'
-                }}
-              />
+              <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '0.5rem', color: '#1a1a1a' }}>Contraseña</label>
+              <input type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && handleLogin('employee')} placeholder="Ingresa tu contraseña" style={{ width: '100%', padding: '0.75rem', border: '1px solid #d0d0d0', borderRadius: '6px', fontSize: '13px', boxSizing: 'border-box' }} />
             </div>
 
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: '1fr 1fr',
-              gap: '1rem',
-              marginBottom: '1rem'
-            }}>
-              <button
-                onClick={() => handleLogin('employee')}
-                style={{
-                  padding: '0.75rem',
-                  backgroundColor: '#3b82f6',
-                  color: '#ffffff',
-                  border: 'none',
-                  borderRadius: '6px',
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  cursor: 'pointer'
-                }}
-              >
-                🧹 Empleado
-              </button>
-              <button
-                onClick={() => handleLogin('owner')}
-                style={{
-                  padding: '0.75rem',
-                  backgroundColor: '#10b981',
-                  color: '#ffffff',
-                  border: 'none',
-                  borderRadius: '6px',
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  cursor: 'pointer'
-                }}
-              >
-                👤 Propietario
-              </button>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+              <button onClick={() => handleLogin('employee')} style={{ padding: '0.75rem', backgroundColor: '#3b82f6', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>🧹 Empleado</button>
+              <button onClick={() => handleLogin('owner')} style={{ padding: '0.75rem', backgroundColor: '#10b981', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>👤 Propietario</button>
             </div>
           </div>
 
-          <div style={{
-            backgroundColor: '#f0f4ff',
-            border: '1px solid #bfdbfe',
-            borderRadius: '6px',
-            padding: '1rem',
-            fontSize: '12px',
-            color: '#1e40af'
-          }}>
+          <div style={{ backgroundColor: '#f0f4ff', border: '1px solid #bfdbfe', borderRadius: '6px', padding: '1rem', fontSize: '12px', color: '#1e40af' }}>
             <strong>Credenciales de demo:</strong>
             <div style={{ marginTop: '0.5rem', lineHeight: 1.6 }}>
-              <div>🧹 Empleado: <code style={{
-                backgroundColor: '#ffffff',
-                padding: '0.25rem 0.5rem',
-                borderRadius: '3px',
-                fontFamily: 'monospace'
-              }}>aseo / 1234</code></div>
-              <div>👤 Propietario: <code style={{
-                backgroundColor: '#ffffff',
-                padding: '0.25rem 0.5rem',
-                borderRadius: '3px',
-                fontFamily: 'monospace'
-              }}>propietario / 1234</code></div>
+              <div>🧹 Empleado: <code style={{ backgroundColor: '#ffffff', padding: '0.25rem 0.5rem', borderRadius: '3px', fontFamily: 'monospace' }}>aseo / 1234</code></div>
+              <div>👤 Propietario: <code style={{ backgroundColor: '#ffffff', padding: '0.25rem 0.5rem', borderRadius: '3px', fontFamily: 'monospace' }}>propietario / 1234</code></div>
             </div>
           </div>
         </div>
@@ -1274,111 +779,25 @@ const CleanCheckRPM = () => {
     );
   }
 
-  // DASHBOARD Y APPS PRINCIPAL
   return (
-    <div style={{
-      fontFamily: 'system-ui, -apple-system, sans-serif',
-      backgroundColor: '#f8f8f8',
-      minHeight: '100vh',
-      padding: '0'
-    }}>
+    <div style={{ fontFamily: 'system-ui, -apple-system, sans-serif', backgroundColor: '#f8f8f8', minHeight: '100vh', padding: '0' }}>
       {/* Header */}
-      <div style={{
-        backgroundColor: '#ffffff',
-        borderBottom: '1px solid #e0e0e0',
-        padding: '1rem',
-        position: 'sticky',
-        top: 0,
-        zIndex: 10,
-        boxShadow: '0 1px 3px rgba(0,0,0,0.05)'
-      }}>
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          marginBottom: userRole === 'owner' ? '1rem' : '0'
-        }}>
-          <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.5rem'
-          }}>
+      <div style={{ backgroundColor: '#ffffff', borderBottom: '1px solid #e0e0e0', padding: '1rem', position: 'sticky', top: 0, zIndex: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: userRole === 'owner' ? '1rem' : '0' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <span style={{ fontSize: '24px' }}>✓</span>
             <div>
-              <h1 style={{
-                fontSize: '20px',
-                fontWeight: 700,
-                margin: '0',
-                color: '#1a1a1a'
-              }}>
-                Clean Check RPM
-              </h1>
-              <p style={{
-                fontSize: '12px',
-                color: '#666666',
-                margin: '0.25rem 0 0 0'
-              }}>
-                {userRole === 'employee' ? '🧹 Empleado' : '👤 Propietario'}
-              </p>
+              <h1 style={{ fontSize: '20px', fontWeight: 700, margin: '0', color: '#1a1a1a' }}>Clean Check RPM</h1>
+              <p style={{ fontSize: '12px', color: '#666666', margin: '0.25rem 0 0 0' }}>{userRole === 'employee' ? '🧹 Empleado' : '👤 Propietario'}</p>
             </div>
           </div>
-          <button
-            onClick={handleLogout}
-            style={{
-              padding: '0.5rem 1rem',
-              backgroundColor: '#fecaca',
-              color: '#991b1b',
-              border: 'none',
-              borderRadius: '6px',
-              fontSize: '13px',
-              fontWeight: 500,
-              cursor: 'pointer'
-            }}
-          >
-            Cerrar sesión
-          </button>
+          <button onClick={handleLogout} style={{ padding: '0.5rem 1rem', backgroundColor: '#fecaca', color: '#991b1b', border: 'none', borderRadius: '6px', fontSize: '13px', fontWeight: 500, cursor: 'pointer' }}>Cerrar sesión</button>
         </div>
 
-        {/* Selector de módulos (solo para Owner) */}
         {userRole === 'owner' && (
-          <div style={{
-            display: 'flex',
-            gap: '0.5rem',
-            borderBottom: '1px solid #e0e0e0',
-            paddingBottom: '0.75rem'
-          }}>
-            <button
-              onClick={() => setCurrentModule('cleaning-check')}
-              style={{
-                padding: '0.5rem 1rem',
-                backgroundColor: currentModule === 'cleaning-check' ? '#f5f5f5' : 'transparent',
-                border: 'none',
-                borderBottom: currentModule === 'cleaning-check' ? '2px solid #3b82f6' : 'none',
-                color: '#1a1a1a',
-                fontSize: '14px',
-                fontWeight: currentModule === 'cleaning-check' ? 600 : 400,
-                cursor: 'pointer',
-                whiteSpace: 'nowrap'
-              }}
-            >
-              🧹 Cleaning Check
-            </button>
-            <button
-              onClick={() => setCurrentModule('revenue-analysis')}
-              style={{
-                padding: '0.5rem 1rem',
-                backgroundColor: currentModule === 'revenue-analysis' ? '#f5f5f5' : 'transparent',
-                border: 'none',
-                borderBottom: currentModule === 'revenue-analysis' ? '2px solid #3b82f6' : 'none',
-                color: '#1a1a1a',
-                fontSize: '14px',
-                fontWeight: currentModule === 'revenue-analysis' ? 600 : 400,
-                cursor: 'pointer',
-                whiteSpace: 'nowrap'
-              }}
-            >
-              📊 Revenue Analysis
-            </button>
+          <div style={{ display: 'flex', gap: '0.5rem', borderBottom: '1px solid #e0e0e0', paddingBottom: '0.75rem' }}>
+            <button onClick={() => setCurrentModule('cleaning-check')} style={{ padding: '0.5rem 1rem', backgroundColor: currentModule === 'cleaning-check' ? '#f5f5f5' : 'transparent', border: 'none', borderBottom: currentModule === 'cleaning-check' ? '2px solid #3b82f6' : 'none', color: '#1a1a1a', fontSize: '14px', fontWeight: currentModule === 'cleaning-check' ? 600 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>🧹 Cleaning Check</button>
+            <button onClick={() => setCurrentModule('revenue-analysis')} style={{ padding: '0.5rem 1rem', backgroundColor: currentModule === 'revenue-analysis' ? '#f5f5f5' : 'transparent', border: 'none', borderBottom: currentModule === 'revenue-analysis' ? '2px solid #3b82f6' : 'none', color: '#1a1a1a', fontSize: '14px', fontWeight: currentModule === 'revenue-analysis' ? 600 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>📊 Revenue Analysis</button>
           </div>
         )}
       </div>
@@ -1386,16 +805,18 @@ const CleanCheckRPM = () => {
       {/* Contenido */}
       <div style={{ padding: '1rem' }}>
         {currentModule === 'cleaning-check' && (
-          <CleaningCheckModule 
-            userRole={userRole} 
+          <CleaningCheckModule
+            userRole={userRole}
             apartments={apartments}
             setApartments={setApartments}
             onLogout={handleLogout}
+            supabaseReports={supabaseReports} // Enviamos los reportes de DB como propiedad
+            onReportSubmitted={fetchReportsFromSupabase} // Refrescar inmediatamente tras un envío
           />
         )}
 
         {currentModule === 'revenue-analysis' && userRole === 'owner' && (
-          <RevenueAnalysisModule onLogout={handleLogout} />
+          <RevenueAnalysisModule />
         )}
       </div>
     </div>
