@@ -1,14 +1,22 @@
 import React, { useState, useEffect } from 'react';
-// 1. Importamos el cliente de Supabase que configuraste
-import { supabase } from './supabaseClient';
+// 1. Importamos el cliente de Supabase
+import { createClient } from '@supabase/supabase-js';
+
+// Configura aquí tus credenciales de Supabase (o impórtalas si las tienes en otro archivo)
+const SUPABASE_URL = "TU_SUPABASE_URL"; 
+const SUPABASE_ANON_KEY = "TU_SUPABASE_ANON_KEY";
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ============ MÓDULO: CLEANING CHECK ============
-const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout, supabaseReports, onReportSubmitted }) => {
+const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) => {
   const [currentTab, setCurrentTab] = useState(userRole === 'owner' ? 'owner' : 'home');
   const [currentApartmentId, setCurrentApartmentId] = useState(null);
   const [workerName, setWorkerName] = useState('');
   const [serviceStarted, setServiceStarted] = useState(false);
   const [startTime, setStartTime] = useState(null);
+  
+  // Guardamos el ID del reporte activo en Supabase para poder actualizarlo al finalizar
+  const [activeReportId, setActiveReportId] = useState(null);
 
   const [editingApartmentId, setEditingApartmentId] = useState(null);
   const [newApartmentName, setNewApartmentName] = useState('');
@@ -39,74 +47,101 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout, su
     return `${hours}h ${minutes}min`;
   };
 
-  const startService = () => {
-    setStartTime(new Date());
+  // ======= ENTRADA A SUPABASE: INICIAR SERVICIO =======
+  const startService = async () => {
+    const ahora = new Date();
+    const hoy = ahora.toISOString().split('T')[0];
+    
+    setStartTime(ahora);
     setServiceStarted(true);
     setCurrentTab('cleaning');
-  };
-
-  // 2. Modificamos submitReport para que sea ASÍNCRONA y guarde en Supabase
-  const submitReport = async () => {
-    if (!currentApartment) return;
-
-    const now = new Date();
-    const today = new Date().toISOString().split('T')[0];
-    const completion = calculateCompletionPercentage();
-    const duration = calculateDuration(startTime, now);
-
-    // Estructuramos la metadata rica del reporte para guardarla en el campo 'novedades' como texto estructurado
-    const metadatosReporte = {
-      workerName: workerName,
-      startTime: formatTime(startTime),
-      endTime: formatTime(now),
-      duration: duration,
-      completion: completion,
-      notes: completion === 100 ? 'Limpieza completada' : 'Limpieza parcial'
-    };
 
     try {
-      // Guardar el registro real en la tabla de Supabase
-      const { error } = await supabase
+      // Insertamos inmediatamente el reporte en estado 'En Progreso'
+      const { data, error } = await supabase
         .from('reportes_aseo')
         .insert([
           {
             apartamento: currentApartment.name,
-            estado: completion === 100 ? 'Completado' : 'En Progreso',
-            checklist_zonas: currentApartment.checklist,
-            inventario: currentApartment.inventory,
-            novedades: JSON.stringify(metadatosReporte) // Guardamos todo el objeto como string JSON
+            worker_name: workerName,
+            start_time: formatTime(ahora),
+            end_time: '--',
+            duration: '0min',
+            completion: 0,
+            notes: 'Servicio iniciado',
+            estado: 'En Progreso',
+            date: hoy
           }
-        ]);
+        ])
+        .select();
 
-      if (error) throw error;
+      if (error) {
+        alert('Error de Supabase al iniciar servicio: ' + error.message);
+        return;
+      }
 
-      // Si todo sale bien en la base de datos, limpiamos el estado local de la app
-      setApartments(prev => prev.map(apt => {
-        if (apt.id === currentApartmentId) {
-          return {
-            ...apt,
-            checklist: resetChecklist(apt.checklist)
-          };
-        }
-        return apt;
-      }));
-
-      alert(`✓ Reporte enviado a Supabase con éxito.\nPropiedad: ${currentApartment.name}\nDuración: ${duration}`);
-
-      // Notificar a la app principal para refrescar la lista del propietario si está viendo
-      if (onReportSubmitted) onReportSubmitted();
-
-      // Resetear estados del flujo del empleado
-      setServiceStarted(false);
-      setStartTime(null);
-      setWorkerName('');
-      setCurrentApartmentId(null);
-      setCurrentTab('home');
-
+      if (data && data.length > 0) {
+        // Guardamos el ID generado por Supabase para el cierre posterior
+        setActiveReportId(data[0].id);
+      }
     } catch (err) {
-      console.error('Error enviando datos a Supabase:', err);
-      alert('❌ Error de conexión al guardar el reporte en Supabase. Inténtalo de nuevo.');
+      console.error('Error en catch al iniciar:', err);
     }
+  };
+
+  // ======= ACTUALIZACIÓN EN SUPABASE: FINALIZAR Y ENVIAR =======
+  const submitReport = async () => {
+    if (!currentApartment) return;
+
+    const now = new Date();
+    const completion = calculateCompletionPercentage();
+    const duration = calculateDuration(startTime, now);
+    
+    try {
+      if (activeReportId) {
+        // Si tenemos la sesión guardada del inicio, hacemos un UPDATE exacto
+        const { error } = await supabase
+          .from('reportes_aseo')
+          .update({
+            end_time: formatTime(now),
+            duration: duration,
+            completion: completion,
+            notes: completion === 100 ? 'Limpieza completada' : 'Limpieza parcial',
+            estado: 'Finalizado'
+          })
+          .eq('id', activeReportId);
+
+        if (error) {
+          alert('Error al actualizar reporte en Supabase: ' + error.message);
+          return;
+        }
+      } else {
+        // Fallback de seguridad: si por red no se capturó el ID, hace un insert limpio
+        const hoy = new Date().toISOString().split('T')[0];
+        await supabase.from('reportes_aseo').insert([{
+          apartamento: currentApartment.name,
+          worker_name: workerName,
+          start_time: formatTime(startTime || now),
+          end_time: formatTime(now),
+          duration: duration,
+          completion: completion,
+          notes: completion === 100 ? 'Limpieza completada' : 'Limpieza parcial',
+          estado: 'Finalizado',
+          date: hoy
+        }]);
+      }
+    } catch (err) {
+      console.error('Error en catch al finalizar:', err);
+    }
+
+    // Reseteamos estados locales de la UI del empleado
+    setServiceStarted(false);
+    setStartTime(null);
+    setWorkerName('');
+    setCurrentApartmentId(null);
+    setActiveReportId(null);
+
+    alert(`✓ Reporte enviado\nAseo: ${currentApartment.name}\nTrabajador: ${workerName}\nDuración: ${duration}`);
   };
 
   const resetChecklist = (checklist) => {
@@ -123,7 +158,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout, su
   const calculateCompletionPercentage = () => {
     if (!currentApartment) return 0;
     const totalItems = Object.values(currentApartment.checklist).reduce((sum, zone) => sum + Object.keys(zone).length, 0);
-    const completedItems = Object.values(currentApartment.checklist).reduce((sum, zone) =>
+    const completedItems = Object.values(currentApartment.checklist).reduce((sum, zone) => 
       sum + Object.values(zone).filter(Boolean).length, 0
     );
     return totalItems > 0 ? Math.round((completedItems / totalItems) * 100) : 0;
@@ -172,12 +207,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout, su
       id: newId,
       name: newApartmentName,
       checklist: { kitchen: {}, bathroom: {}, bedroom: {}, common: {} },
-      inventory: {
-        towels: { label: 'Toallas limpias', icon: '🏖️', min: 5, current: 0 },
-        toilet_paper: { label: 'Papel higiénico', icon: '📄', min: 8, current: 0 },
-        soap_shampoo: { label: 'Jabón/Shampoo', icon: '🧴', min: 3, current: 0 },
-        coffee_water: { label: 'Café/Agua', icon: '☕', min: 6, current: 0 }
-      },
+      inventory: {},
       reports: []
     };
     setApartments([...apartments, newApartment]);
@@ -246,90 +276,17 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout, su
   return (
     <div>
       {/* Tabs */}
-      <div style={{
-        display: 'flex',
-        gap: '0.5rem',
-        overflow: 'auto',
-        borderBottom: '1px solid #e0e0e0',
-        paddingBottom: '0.75rem',
-        marginBottom: '1rem'
-      }}>
+      <div style={{ display: 'flex', gap: '0.5rem', overflow: 'auto', borderBottom: '1px solid #e0e0e0', paddingBottom: '0.75rem', marginBottom: '1rem' }}>
         {userRole === 'employee' && (
           <>
-            <button
-              onClick={() => {
-                setCurrentTab('home');
-                if (serviceStarted) setServiceStarted(false);
-              }}
-              style={{
-                padding: '0.5rem 1rem',
-                backgroundColor: currentTab === 'home' ? '#f5f5f5' : 'transparent',
-                border: 'none',
-                borderBottom: currentTab === 'home' ? '2px solid #3b82f6' : 'none',
-                color: '#1a1a1a',
-                fontSize: '13px',
-                fontWeight: currentTab === 'home' ? 500 : 400,
-                cursor: 'pointer',
-                whiteSpace: 'nowrap'
-              }}
-            >
-              🏠 Inicio
-            </button>
-            <button
-              onClick={() => setCurrentTab('cleaning')}
-              disabled={!serviceStarted}
-              style={{
-                padding: '0.5rem 1rem',
-                color: !serviceStarted ? '#cccccc' : '#1a1a1a',
-                opacity: serviceStarted ? 1 : 0.5,
-                whiteSpace: 'nowrap',
-                border: 'none',
-                borderBottom: currentTab === 'cleaning' ? '2px solid #3b82f6' : 'none',
-                backgroundColor: currentTab === 'cleaning' ? '#f5f5f5' : 'transparent',
-                fontSize: '13px',
-                fontWeight: currentTab === 'cleaning' ? 500 : 400,
-                cursor: serviceStarted ? 'pointer' : 'not-allowed'
-              }}
-            >
-              🧹 Aseo
-            </button>
+            <button onClick={() => { setCurrentTab('home'); if (serviceStarted) setServiceStarted(false); }} style={{ padding: '0.5rem 1rem', backgroundColor: currentTab === 'home' ? '#f5f5f5' : 'transparent', border: 'none', borderBottom: currentTab === 'home' ? '2px solid #3b82f6' : 'none', color: '#1a1a1a', fontSize: '13px', fontWeight: currentTab === 'home' ? 500 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>🏠 Inicio</button>
+            <button onClick={() => setCurrentTab('cleaning')} disabled={!serviceStarted} style={{ padding: '0.5rem 1rem', color: !serviceStarted ? '#cccccc' : '#1a1a1a', opacity: serviceStarted ? 1 : 0.5, whiteSpace: 'nowrap', border: 'none', borderBottom: currentTab === 'cleaning' ? '2px solid #3b82f6' : 'none', backgroundColor: currentTab === 'cleaning' ? '#f5f5f5' : 'transparent', fontSize: '13px', fontWeight: currentTab === 'cleaning' ? 500 : 400, cursor: serviceStarted ? 'pointer' : 'not-allowed' }}>🧹 Aseo</button>
           </>
         )}
-
         {userRole === 'owner' && (
           <>
-            <button
-              onClick={() => setCurrentTab('owner')}
-              style={{
-                padding: '0.5rem 1rem',
-                backgroundColor: currentTab === 'owner' ? '#f5f5f5' : 'transparent',
-                border: 'none',
-                borderBottom: currentTab === 'owner' ? '2px solid #3b82f6' : 'none',
-                color: '#1a1a1a',
-                fontSize: '13px',
-                fontWeight: currentTab === 'owner' ? 500 : 400,
-                cursor: 'pointer',
-                whiteSpace: 'nowrap'
-              }}
-            >
-              📋 Reportes
-            </button>
-            <button
-              onClick={() => setCurrentTab('config')}
-              style={{
-                padding: '0.5rem 1rem',
-                backgroundColor: currentTab === 'config' ? '#f5f5f5' : 'transparent',
-                border: 'none',
-                borderBottom: currentTab === 'config' ? '2px solid #3b82f6' : 'none',
-                color: '#1a1a1a',
-                fontSize: '13px',
-                fontWeight: currentTab === 'config' ? 500 : 400,
-                cursor: 'pointer',
-                whiteSpace: 'nowrap'
-              }}
-            >
-              ⚙️ Config
-            </button>
+            <button onClick={() => setCurrentTab('owner')} style={{ padding: '0.5rem 1rem', backgroundColor: currentTab === 'owner' ? '#f5f5f5' : 'transparent', border: 'none', borderBottom: currentTab === 'owner' ? '2px solid #3b82f6' : 'none', color: '#1a1a1a', fontSize: '13px', fontWeight: currentTab === 'owner' ? 500 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>📋 Reportes</button>
+            <button onClick={() => setCurrentTab('config')} style={{ padding: '0.5rem 1rem', backgroundColor: currentTab === 'config' ? '#f5f5f5' : 'transparent', border: 'none', borderBottom: currentTab === 'config' ? '2px solid #3b82f6' : 'none', color: '#1a1a1a', fontSize: '13px', fontWeight: currentTab === 'config' ? 500 : 400, cursor: 'pointer', whiteSpace: 'nowrap' }}>⚙️ Config</button>
           </>
         )}
       </div>
@@ -339,87 +296,24 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout, su
         {/* EMPLOYEE - HOME */}
         {userRole === 'employee' && currentTab === 'home' && !serviceStarted && (
           <div>
-            <h2 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '1rem' }}>
-              📍 Selecciona un apartamento
-            </h2>
-
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
-              gap: '1rem',
-              marginBottom: '2rem'
-            }}>
+            <h2 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '1rem' }}>📍 Selecciona un apartamento</h2>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
               {apartments.map(apt => (
-                <div
-                  key={apt.id}
-                  onClick={() => setCurrentApartmentId(apt.id)}
-                  style={{
-                    backgroundColor: currentApartmentId === apt.id ? '#ecfdf5' : '#ffffff',
-                    border: currentApartmentId === apt.id ? '2px solid #10b981' : '1px solid #e0e0e0',
-                    borderRadius: '8px',
-                    padding: '1rem',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s'
-                  }}
-                >
-                  <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '0 0 0.5rem 0' }}>
-                    {apt.name}
-                  </h3>
-                  <p style={{ fontSize: '12px', color: '#666666', margin: '0' }}>
-                    Items: {Object.keys(apt.inventory).length}
-                  </p>
+                <div key={apt.id} onClick={() => setCurrentApartmentId(apt.id)} style={{ backgroundColor: currentApartmentId === apt.id ? '#ecfdf5' : '#ffffff', border: currentApartmentId === apt.id ? '2px solid #10b981' : '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem', cursor: 'pointer', transition: 'all 0.2s' }}>
+                  <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '0 0 0.5rem 0' }}>{apt.name}</h3>
+                  <p style={{ fontSize: '12px', color: '#666666', margin: '0' }}>Items: {Object.keys(apt.inventory).length}</p>
                 </div>
               ))}
             </div>
 
             {currentApartmentId && (
-              <div style={{
-                backgroundColor: '#ffffff',
-                border: '1px solid #e0e0e0',
-                borderRadius: '8px',
-                padding: '1.5rem'
-              }}>
-                <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '0 0 1rem 0' }}>
-                  👤 Datos del trabajador
-                </h3>
-
+              <div style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1.5rem' }}>
+                <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '0 0 1rem 0' }}>👤 Datos del trabajador</h3>
                 <div style={{ marginBottom: '1rem' }}>
-                  <label style={{ fontSize: '13px', fontWeight: 500, display: 'block', marginBottom: '0.5rem' }}>
-                    Tu nombre
-                  </label>
-                  <input
-                    type="text"
-                    value={workerName}
-                    onChange={(e) => setWorkerName(e.target.value)}
-                    placeholder="Ej: María García"
-                    style={{
-                      width: '100%',
-                      padding: '0.75rem',
-                      border: '1px solid #d0d0d0',
-                      borderRadius: '6px',
-                      fontSize: '13px',
-                      boxSizing: 'border-box'
-                    }}
-                  />
+                  <label style={{ fontSize: '13px', fontWeight: 500, display: 'block', marginBottom: '0.5rem' }}>Tu nombre</label>
+                  <input type="text" value={workerName} onChange={(e) => setWorkerName(e.target.value)} placeholder="Ej: María García" style={{ width: '100%', padding: '0.75rem', border: '1px solid #d0d0d0', borderRadius: '6px', fontSize: '13px', boxSizing: 'border-box' }} />
                 </div>
-
-                <button
-                  onClick={startService}
-                  disabled={!currentApartmentId || !workerName}
-                  style={{
-                    width: '100%',
-                    padding: '0.75rem',
-                    backgroundColor: (currentApartmentId && workerName) ? '#10b981' : '#cccccc',
-                    color: '#ffffff',
-                    border: 'none',
-                    borderRadius: '6px',
-                    fontSize: '14px',
-                    fontWeight: 600,
-                    cursor: (currentApartmentId && workerName) ? 'pointer' : 'not-allowed'
-                  }}
-                >
-                  ▶️ Iniciar servicio
-                </button>
+                <button onClick={startService} disabled={!currentApartmentId || !workerName} style={{ width: '100%', padding: '0.75rem', backgroundColor: (currentApartmentId && workerName) ? '#10b981' : '#cccccc', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '14px', fontWeight: 600, cursor: (currentApartmentId && workerName) ? 'pointer' : 'not-allowed' }}>▶️ Iniciar servicio</button>
               </div>
             )}
           </div>
@@ -428,53 +322,30 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout, su
         {/* EMPLOYEE - CLEANING */}
         {userRole === 'employee' && currentTab === 'cleaning' && serviceStarted && currentApartment && (
           <div>
-            <h2 style={{ fontSize: '15px', fontWeight: 600, marginBottom: '1rem' }}>
-              📋 Checklist de aseo
-            </h2>
-
-            <div style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-              gap: '0.75rem',
-              marginBottom: '1.5rem'
-            }}>
+            <h2 style={{ fontSize: '15px', fontWeight: 600, marginBottom: '1rem' }}>📋 Checklist de aseo</h2>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '0.75rem', marginBottom: '1.5rem' }}>
               {Object.entries(zones).map(([zoneKey, zone]) => (
-                <div
-                  key={zoneKey}
-                  style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem' }}
-                >
-                  <p style={{ fontSize: '14px', fontWeight: 500, margin: '0 0 0.75rem 0' }}>
-                    {zone.icon} {zone.name}
-                  </p>
+                <div key={zoneKey} style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem' }}>
+                  <p style={{ fontSize: '14px', fontWeight: 500, margin: '0 0 0.75rem 0' }}>{zone.icon} {zone.name}</p>
                   {Object.entries(currentApartment.checklist[zoneKey] || {}).map(([item, completed]) => (
                     <label key={item} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '13px', marginBottom: '0.5rem' }}>
-                      <input
-                        type="checkbox"
-                        checked={completed}
-                        onChange={() => toggleChecklistItem(zoneKey, item)}
-                        style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: '#10b981' }}
-                      />
-                      <span style={{ textDecoration: completed ? 'line-through' : 'none', color: completed ? '#999999' : '#1a1a1a' }}>
-                        {item}
-                      </span>
+                      <input type="checkbox" checked={completed} onChange={() => toggleChecklistItem(zoneKey, item)} style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: '#10b981' }} />
+                      <span style={{ textDecoration: completed ? 'line-through' : 'none', color: completed ? '#999999' : '#1a1a1a' }}>{item}</span>
                     </label>
                   ))}
                 </div>
               ))}
             </div>
 
+            {/* Inventario */}
             <div style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem', marginBottom: '1.5rem' }}>
-              <h2 style={{ fontSize: '15px', fontWeight: 500, margin: '0 0 1rem 0' }}>
-                📊 Inventario
-              </h2>
-
+              <h2 style={{ fontSize: '15px', fontWeight: 500, margin: '0 0 1rem 0' }}>📊 Inventario</h2>
               {Object.entries(currentApartment.inventory).map(([key, item]) => (
-                <div key={key} style={{ display: 'flex', alignItems: 'center', justifyValues: 'space-between', padding: '0.75rem', backgroundColor: '#f5f5f5', borderRadius: '6px', gap: '1rem', marginBottom: '0.75rem' }}>
+                <div key={key} style={{ display: 'flex', alignItems: 'center', justifyBaycontent: 'space-between', padding: '0.75rem', backgroundColor: '#f5f5f5', borderRadius: '6px', gap: '1rem', marginBottom: '0.75rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
                     <span style={{ fontSize: '18px' }}>{item.icon}</span>
                     <span style={{ fontSize: '13px', fontWeight: 500 }}>{item.label}</span>
                   </div>
-
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     <button onClick={() => updateInventory(key, -1)} style={{ width: '28px', height: '28px', border: '1px solid #d0d0d0', backgroundColor: '#ffffff', borderRadius: '6px', cursor: 'pointer', fontSize: '16px' }}>−</button>
                     <span style={{ fontSize: '15px', fontWeight: 600, minWidth: '24px', textAlign: 'center' }}>{item.current}</span>
@@ -484,96 +355,69 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout, su
               ))}
             </div>
 
+            {/* Progreso y Fin */}
             <div style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem' }}>
               <div style={{ marginBottom: '1rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                  <span style={{ fontSize: '13px', fontWeight: 500 }}>Progreso</span>
-                  <span style={{ fontSize: '14px', fontWeight: 600, color: '#10b981' }}>{completionPercentage}%</span>
-                </div>
-                <div style={{ width: '100%', height: '6px', backgroundColor: '#f0f0f0', borderRadius: '6px', overflow: 'hidden' }}>
-                  <div style={{ height: '100%', width: `${completionPercentage}%`, backgroundColor: '#10b981' }} />
-                </div>
+                <div style={{ display: 'flex', justifyBaycontent: 'space-between', marginBottom: '0.5rem' }}><span style={{ fontSize: '13px', fontWeight: 500 }}>Progreso</span><span style={{ fontSize: '14px', fontWeight: 600, color: '#10b981' }}>{completionPercentage}%</span></div>
+                <div style={{ width: '100%', height: '6px', backgroundColor: '#f0f0f0', borderRadius: '6px', overflow: 'hidden' }}><div style={{ height: '100%', width: `${completionPercentage}%`, backgroundColor: '#10b981' }} /></div>
               </div>
-
-              <button
-                onClick={submitReport}
-                style={{ width: '100%', padding: '0.75rem', backgroundColor: '#3b82f6', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}
-              >
-                ✓ Finalizar y enviar reporte
-              </button>
+              <button onClick={submitReport} style={{ width: '100%', padding: '0.75rem', backgroundColor: '#3b82f6', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>✓ Finalizar y enviar reporte</button>
             </div>
           </div>
         )}
 
-        {/* OWNER - REPORTES (Conectado a la data de Supabase) */}
+        {/* OWNER - REPORTES */}
         {userRole === 'owner' && currentTab === 'owner' && (
           <div>
-            <h2 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '1.5rem' }}>
-              📋 Reportes de Aseos (Desde Supabase)
-            </h2>
-
+            <h2 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '1.5rem' }}>📋 Reportes de Aseos</h2>
             {apartments.length === 0 ? (
-              <div style={{ backgroundColor: '#fef3c7', border: '1px solid #fcd34d', borderRadius: '8px', padding: '1rem', textAlign: 'center' }}>
-                <p style={{ fontSize: '13px', color: '#92400e', margin: 0 }}>No hay apartamentos</p>
-              </div>
+              <div style={{ backgroundColor: '#fef3c7', border: '1px solid #fcd34d', borderRadius: '8px', padding: '1rem', textAlign: 'center' }}><p style={{ fontSize: '13px', color: '#92400e', margin: 0 }}>No hay apartamentos</p></div>
             ) : (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1rem' }}>
-                {apartments.map(apt => {
-                  // Filtramos los reportes que coincidan con este apartamento
-                  const filtrados = supabaseReports.filter(r => r.apartamento === apt.name);
-
-                  return (
-                    <div key={apt.id} style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem' }}>
-                      <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '0 0 1rem 0', color: '#1a1a1a' }}>
-                        {apt.name}
-                      </h3>
-
-                      {filtrados.length === 0 ? (
-                        <p style={{ fontSize: '13px', color: '#999999', textAlign: 'center', padding: '1rem 0', margin: 0 }}>
-                          Sin reportes en base de datos
-                        </p>
-                      ) : (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                          {filtrados.slice(0, 5).map((dbReport) => {
-                            // Desempaquetamos de forma segura el JSON guardado en 'novedades'
-                            let detalles = {};
-                            try {
-                              detalles = JSON.parse(dbReport.novedades || '{}');
-                            } catch (e) {
-                              detalles = { workerName: 'Desconocido', completion: 0, notes: dbReport.novedades };
-                            }
-
-                            return (
-                              <div
-                                key={dbReport.id}
-                                style={{
-                                  padding: '0.75rem',
-                                  backgroundColor: '#f5f5f5',
-                                  borderRadius: '6px',
-                                  borderLeft: `3px solid ${dbReport.estado === 'Completado' ? '#10b981' : '#f59e0b'}`,
-                                  fontSize: '12px'
-                                }}
-                              >
-                                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                                  <strong>{new Date(dbReport.created_at).toLocaleDateString('es-CO')}</strong>
-                                  <span style={{ color: dbReport.estado === 'Completado' ? '#10b981' : '#f59e0b', fontWeight: 600 }}>
-                                    {detalles.completion || 0}%
-                                  </span>
-                                </div>
-                                <p style={{ margin: '0.25rem 0' }}>👤 {detalles.workerName || 'Anónimo'}</p>
-                                <p style={{ margin: '0.25rem 0', color: '#555' }}>⏱ Duración: {detalles.duration || '--'}</p>
-                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '11px', marginTop: '0.25rem' }}>
-                                  <div><strong>Inicio:</strong> {detalles.startTime || '--'}</div>
-                                  <div><strong>Fin:</strong> {detalles.endTime || '--'}</div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
+                {apartments.map(apt => (
+                  <div key={apt.id} style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem' }}>
+                    <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '0 0 1rem 0', color: '#1a1a1a' }}>{apt.name}</h3>
+                    {apt.reports.length === 0 ? (
+                      <p style={{ fontSize: '13px', color: '#999999', textAlign: 'center', padding: '1rem 0', margin: 0 }}>Sin reportes</p>
+                    ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                        {apt.reports.slice(0, 5).map((report, idx) => (
+                          <div
+                            key={report.id || idx}
+                            style={{
+                              padding: '0.75rem',
+                              backgroundColor: '#f5f5f5',
+                              borderRadius: '6px',
+                              // Si está en progreso, borde azul dinámico; si no, verde o amarillo según porcentaje
+                              borderLeft: `3px solid ${report.estado === 'En Progreso' ? '#3b82f6' : (report.completion === 100 ? '#10b981' : '#f59e0b')}`,
+                              fontSize: '12px'
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                              <strong>{report.date}</strong>
+                              <span style={{ color: report.estado === 'En Progreso' ? '#3b82f6' : (report.completion === 100 ? '#10b981' : '#f59e0b'), fontWeight: 600 }}>
+                                {report.completion}%
+                              </span>
+                            </div>
+                            <p style={{ margin: '0.25rem 0', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                              👤 {report.workerName}
+                              {/* BADGE EN TIEMPO REAL SI EL EMPLEADO ESTÁ LIMPIANDO EN ESE INSTANTE */}
+                              {report.estado === 'En Progreso' && (
+                                <span style={{ backgroundColor: '#dbeafe', color: '#1e40af', padding: '2px 6px', borderRadius: '4px', fontSize: '10px', fontWeight: 'bold', animation: 'pulse 2s infinite' }}>
+                                  🔄 En Progreso
+                                </span>
+                              )}
+                            </p>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '11px' }}>
+                              <div><strong>Inicio:</strong> {report.startTime}</div>
+                              <div><strong>Fin:</strong> {report.endTime}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -586,36 +430,17 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout, su
             <div style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem', marginBottom: '1.5rem' }}>
               <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '0 0 1rem 0' }}>➕ Nuevo apartamento</h3>
               <div style={{ display: 'flex', gap: '0.75rem' }}>
-                <input
-                  type="text"
-                  value={newApartmentName}
-                  onChange={(e) => setNewApartmentName(e.target.value)}
-                  placeholder="Ej: Apartamento C"
-                  style={{ flex: 1, padding: '0.75rem', border: '1px solid #d0d0d0', borderRadius: '6px', fontSize: '13px', boxSizing: 'border-box' }}
-                />
-                <button
-                  onClick={createApartment}
-                  disabled={!newApartmentName.trim()}
-                  style={{ padding: '0.75rem 1.5rem', backgroundColor: newApartmentName.trim() ? '#3b82f6' : '#cccccc', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '13px', fontWeight: 600, cursor: newApartmentName.trim() ? 'pointer' : 'not-allowed' }}
-                >
-                  Crear
-                </button>
+                <input type="text" value={newApartmentName} onChange={(e) => setNewApartmentName(e.target.value)} placeholder="Ej: Apartamento C" style={{ flex: 1, padding: '0.75rem', border: '1px solid #d0d0d0', borderRadius: '6px', fontSize: '13px', boxSizing: 'border-box' }} />
+                <button onClick={createApartment} disabled={!newApartmentName.trim()} style={{ padding: '0.75rem 1.5rem', backgroundColor: newApartmentName.trim() ? '#3b82f6' : '#cccccc', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '13px', fontWeight: 600, cursor: newApartmentName.trim() ? 'pointer' : 'not-allowed' }}>Crear</button>
               </div>
             </div>
-
             <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '0 0 1rem 0' }}>📍 Mis Apartamentos</h3>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: '1rem' }}>
               {apartments.map(apt => (
                 <div key={apt.id} style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem' }}>
                   {editingNameId === apt.id ? (
                     <div style={{ marginBottom: '1rem' }}>
-                      <input
-                        type="text"
-                        value={editingNameValue}
-                        onChange={(e) => setEditingNameValue(e.target.value)}
-                        placeholder="Nuevo nombre"
-                        style={{ width: '100%', padding: '0.5rem', border: '1px solid #d0d0d0', borderRadius: '6px', fontSize: '13px', marginBottom: '0.5rem', boxSizing: 'border-box' }}
-                      />
+                      <input type="text" value={editingNameValue} onChange={(e) => setEditingNameValue(e.target.value)} placeholder="Nuevo nombre" style={{ width: '100%', padding: '0.5rem', border: '1px solid #d0d0d0', borderRadius: '6px', fontSize: '13px', marginBottom: '0.5rem', boxSizing: 'border-box' }} />
                       <div style={{ display: 'flex', gap: '0.5rem' }}>
                         <button onClick={() => updateApartmentName(apt.id, editingNameValue)} style={{ flex: 1, padding: '0.5rem', backgroundColor: '#10b981', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 500, cursor: 'pointer' }}>Guardar</button>
                         <button onClick={() => { setEditingNameId(null); setEditingNameValue(''); }} style={{ flex: 1, padding: '0.5rem', backgroundColor: '#f0f0f0', color: '#1a1a1a', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 500, cursor: 'pointer' }}>Cancelar</button>
@@ -624,10 +449,10 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout, su
                   ) : (
                     <>
                       <h4 style={{ fontSize: '14px', fontWeight: 600, margin: '0 0 0.75rem 0', color: '#1a1a1a' }}>{apt.name}</h4>
-                      <p style={{ fontSize: '12px', color: '#666666', margin: '0 0 1rem 0' }}>Items: {Object.keys(apt.inventory).length}</p>
+                      <p style={{ fontSize: '12px', color: '#666666', margin: '0 0 1rem 0' }}>Items: {Object.keys(apt.inventory).length} | Reportes: {apt.reports.length}</p>
                       <div style={{ display: 'flex', gap: '0.5rem' }}>
                         <button onClick={() => { setEditingNameId(apt.id); setEditingNameValue(apt.name); }} style={{ flex: 1, padding: '0.5rem', backgroundColor: '#f0f4ff', color: '#3b82f6', border: '1px solid #bfdbfe', borderRadius: '6px', fontSize: '12px', fontWeight: 500, cursor: 'pointer' }}>✏️ Editar</button>
-                        <button onClick={() => { if (window.confirm(`¿Eliminar ${apt.name}?`)) deleteApartment(apt.id); }} style={{ flex: 1, padding: '0.5rem', backgroundColor: '#fecaca', color: '#991b1b', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 500, cursor: 'pointer' }}>🗑️</button>
+                        <button onClick={() => { if (window.confirm(`¿Eliminar ${apt.name}?`)) { deleteApartment(apt.id); } }} style={{ flex: 1, padding: '0.5rem', backgroundColor: '#fecaca', color: '#991b1b', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 500, cursor: 'pointer' }}>🗑️</button>
                       </div>
                     </>
                   )}
@@ -642,16 +467,14 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout, su
 };
 
 // ============ MÓDULO: REVENUE ANALYSIS (PLACEHOLDER) ============
-const RevenueAnalysisModule = () => {
+const RevenueAnalysisModule = ({ onLogout }) => {
   return (
     <div style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '12px', padding: '3rem', textAlign: 'center', maxWidth: '600px', margin: '2rem auto' }}>
       <div style={{ fontSize: '48px', marginBottom: '1rem' }}>📊</div>
       <h2 style={{ fontSize: '24px', fontWeight: 600, margin: '0 0 1rem 0', color: '#1a1a1a' }}>Revenue Analysis</h2>
       <p style={{ fontSize: '14px', color: '#666666', margin: '0 0 2rem 0', lineHeight: 1.6 }}>Este módulo está en desarrollo. Aquí se incluirán análisis de ingresos, reportes de ocupación, métricas de desempeño y más.</p>
       <div style={{ backgroundColor: '#f0f4ff', border: '1px solid #bfdbfe', borderRadius: '8px', padding: '1.5rem' }}>
-        <p style={{ fontSize: '13px', color: '#1e40af', margin: 0, lineHeight: 1.6 }}>
-          <strong>Estado:</strong> Próximos pasos<br />• Integración con datos de ocupación<br />• Cálculos de ingresos por propiedad<br />• Gráficas de tendencias<br />• Reportes exportables
-        </p>
+        <p style={{ fontSize: '13px', color: '#1e40af', margin: 0, lineHeight: 1.6 }}><strong>Estado:</strong> Próximos pasos<br/>• Integración con datos de ocupación<br/>• Cálculos de ingresos por propiedad<br/>• Gráficas de tendencias<br/>• Reportes exportables</p>
       </div>
     </div>
   );
@@ -664,9 +487,6 @@ const CleanCheckRPM = () => {
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [currentModule, setCurrentModule] = useState('cleaning-check');
-
-  // 3. Nuevo estado para almacenar los reportes traídos de Supabase
-  const [supabaseReports, setSupabaseReports] = useState([]);
 
   const [apartments, setApartments] = useState([
     {
@@ -684,7 +504,7 @@ const CleanCheckRPM = () => {
         soap_shampoo: { label: 'Jabón/Shampoo', icon: '🧴', min: 3, current: 5 },
         coffee_water: { label: 'Café/Agua', icon: '☕', min: 6, current: 10 }
       },
-      reports: []
+      reports: [] // Inicializado vacío para recibir datos desde Supabase
     }
   ]);
 
@@ -697,27 +517,104 @@ const CleanCheckRPM = () => {
     document.title = 'Clean Check RPM - Revenue Property Management';
   }, []);
 
-  // 4. Función para descargar los reportes reales de Supabase
-  const fetchReportsFromSupabase = async () => {
-    try {
+  // =========================================================
+  //  HOOK CRUCIAL: CARGA INICIAL Y ESCUCHA EN TIEMPO REAL
+  // =========================================================
+  useEffect(() => {
+    // A. Descargar el histórico de reportes existentes al abrir la app
+    const syncInitialData = async () => {
       const { data, error } = await supabase
         .from('reportes_aseo')
         .select('*')
-        .order('created_at', { ascending: false });
+        .order('id', { ascending: false }); // Los más recientes primero
 
-      if (error) throw error;
-      setSupabaseReports(data || []);
-    } catch (err) {
-      console.error('Error cargando reportes desde Supabase:', err);
-    }
-  };
+      if (!error && data) {
+        setApartments(prev => prev.map(apt => {
+          // Filtramos y transformamos las columnas snake_case de Postgres a tu camelCase de UI
+          const filtrados = data
+            .filter(row => row.apartamento === apt.name)
+            .map(row => ({
+              id: row.id,
+              date: row.date || row.created_at?.split('T')[0],
+              startTime: row.start_time,
+              endTime: row.end_time,
+              duration: row.duration,
+              completion: row.completion,
+              workerName: row.worker_name,
+              notes: row.notes,
+              estado: row.estado
+            }));
+          return { ...apt, reports: filtrados };
+        }));
+      }
+    };
 
-  // 5. Efecto para actualizar reportes automáticamente al loguearse o cambiar pestañas
-  useEffect(() => {
-    if (isLoggedIn && userRole === 'owner') {
-      fetchReportsFromSupabase();
-    }
-  }, [isLoggedIn, userRole, currentModule]);
+    syncInitialData();
+
+    // B. Suscripción por WebSockets (Realtime) habilitada para cualquier cambio (* INSERT/UPDATE)
+    const realtimeChannel = supabase
+      .channel('room-reportes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'reportes_aseo' },
+        (payload) => {
+          const row = payload.new;
+
+          // Evento 1: Cuando el empleado le da a "Iniciar Servicio" (INSERT)
+          if (payload.eventType === 'INSERT') {
+            setApartments(prev => prev.map(apt => {
+              if (apt.name === row.apartamento) {
+                const yaExiste = apt.reports.some(r => r.id === row.id);
+                if (yaExiste) return apt;
+
+                const nuevoReporte = {
+                  id: row.id,
+                  date: row.date,
+                  startTime: row.start_time,
+                  endTime: row.end_time,
+                  duration: row.duration,
+                  completion: row.completion,
+                  workerName: row.worker_name,
+                  notes: row.notes,
+                  estado: row.estado
+                };
+                return { ...apt, reports: [nuevoReporte, ...apt.reports] };
+              }
+              return apt;
+            }));
+          }
+          
+          // Evento 2: Cuando el empleado le da a "Finalizar" (UPDATE)
+          if (payload.eventType === 'UPDATE') {
+            setApartments(prev => prev.map(apt => {
+              if (apt.name === row.apartamento) {
+                return {
+                  ...apt,
+                  reports: apt.reports.map(r => r.id === row.id ? {
+                    id: row.id,
+                    date: row.date,
+                    startTime: row.start_time,
+                    endTime: row.end_time,
+                    duration: row.duration,
+                    completion: row.completion,
+                    workerName: row.worker_name,
+                    notes: row.notes,
+                    estado: row.estado
+                  } : r)
+                };
+              }
+              return apt;
+            }));
+          }
+        }
+      )
+      .subscribe();
+
+    // Cleanup: Desconectar el canal Realtime al desmontar la app
+    return () => {
+      supabase.removeChannel(realtimeChannel);
+    };
+  }, []);
 
   const handleLogin = (role) => {
     if (loginUsername === credentials[role].username && loginPassword === credentials[role].password) {
@@ -739,34 +636,29 @@ const CleanCheckRPM = () => {
     setCurrentModule('cleaning-check');
   };
 
-  // PANTALLA DE LOGIN
   if (!isLoggedIn) {
     return (
-      <div style={{ fontFamily: 'system-ui, -apple-system, sans-serif', backgroundColor: '#f8f8f8', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+      <div style={{ fontFamily: 'system-ui, -apple-system, sans-serif', backgroundColor: '#f8f8f8', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyBaycontent: 'center', padding: '1rem' }}>
         <div style={{ backgroundColor: '#ffffff', borderRadius: '12px', boxShadow: '0 10px 25px rgba(0,0,0,0.1)', padding: '2rem', maxWidth: '400px', width: '100%' }}>
           <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
             <div style={{ fontSize: '48px', marginBottom: '1rem' }}>✓</div>
             <h1 style={{ fontSize: '28px', fontWeight: 700, margin: '0 0 0.5rem 0', color: '#1a1a1a' }}>Clean Check RPM</h1>
             <p style={{ fontSize: '14px', color: '#666666', margin: 0 }}>Revenue Property Management System</p>
           </div>
-
           <div style={{ marginBottom: '2rem' }}>
             <div style={{ marginBottom: '1rem' }}>
               <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '0.5rem', color: '#1a1a1a' }}>Usuario</label>
               <input type="text" value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && handleLogin('employee')} placeholder="Ingresa tu usuario" style={{ width: '100%', padding: '0.75rem', border: '1px solid #d0d0d0', borderRadius: '6px', fontSize: '13px', boxSizing: 'border-box' }} />
             </div>
-
             <div style={{ marginBottom: '1.5rem' }}>
               <label style={{ display: 'block', fontSize: '13px', fontWeight: 500, marginBottom: '0.5rem', color: '#1a1a1a' }}>Contraseña</label>
               <input type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && handleLogin('employee')} placeholder="Ingresa tu contraseña" style={{ width: '100%', padding: '0.75rem', border: '1px solid #d0d0d0', borderRadius: '6px', fontSize: '13px', boxSizing: 'border-box' }} />
             </div>
-
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
               <button onClick={() => handleLogin('employee')} style={{ padding: '0.75rem', backgroundColor: '#3b82f6', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>🧹 Empleado</button>
               <button onClick={() => handleLogin('owner')} style={{ padding: '0.75rem', backgroundColor: '#10b981', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>👤 Propietario</button>
             </div>
           </div>
-
           <div style={{ backgroundColor: '#f0f4ff', border: '1px solid #bfdbfe', borderRadius: '6px', padding: '1rem', fontSize: '12px', color: '#1e40af' }}>
             <strong>Credenciales de demo:</strong>
             <div style={{ marginTop: '0.5rem', lineHeight: 1.6 }}>
@@ -783,7 +675,7 @@ const CleanCheckRPM = () => {
     <div style={{ fontFamily: 'system-ui, -apple-system, sans-serif', backgroundColor: '#f8f8f8', minHeight: '100vh', padding: '0' }}>
       {/* Header */}
       <div style={{ backgroundColor: '#ffffff', borderBottom: '1px solid #e0e0e0', padding: '1rem', position: 'sticky', top: 0, zIndex: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: userRole === 'owner' ? '1rem' : '0' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyBaycontent: 'space-between', marginBottom: userRole === 'owner' ? '1rem' : '0' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <span style={{ fontSize: '24px' }}>✓</span>
             <div>
@@ -802,21 +694,12 @@ const CleanCheckRPM = () => {
         )}
       </div>
 
-      {/* Contenido */}
       <div style={{ padding: '1rem' }}>
         {currentModule === 'cleaning-check' && (
-          <CleaningCheckModule
-            userRole={userRole}
-            apartments={apartments}
-            setApartments={setApartments}
-            onLogout={handleLogout}
-            supabaseReports={supabaseReports} // Enviamos los reportes de DB como propiedad
-            onReportSubmitted={fetchReportsFromSupabase} // Refrescar inmediatamente tras un envío
-          />
+          <CleaningCheckModule userRole={userRole} apartments={apartments} setApartments={setApartments} onLogout={handleLogout} />
         )}
-
         {currentModule === 'revenue-analysis' && userRole === 'owner' && (
-          <RevenueAnalysisModule />
+          <RevenueAnalysisModule onLogout={handleLogout} />
         )}
       </div>
     </div>
