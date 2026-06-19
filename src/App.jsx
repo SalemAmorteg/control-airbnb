@@ -69,9 +69,6 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
 
   useEffect(() => {
     if (userRole === 'employee' && currentApartmentId) {
-      // Cargar inventario inicial desde Supabase
-      loadInventoryFromSupabase();
-
       // Suscribirse a cambios en tiempo real
       const channel = supabase
         .channel(`inventory_${currentApartmentId}`)
@@ -84,7 +81,6 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
             filter: `apartamento_id=eq.${currentApartmentId}`
           },
           (payload) => {
-            loadInventoryFromSupabase();
           }
         )
         .subscribe();
@@ -94,43 +90,6 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
       };
     }
   }, [userRole, currentApartmentId]);
-
-  const loadInventoryFromSupabase = async () => {
-    if (!currentApartmentId) return;
-
-    try {
-      const { data, error } = await supabase
-        .from('inventario')
-        .select('*')
-        .eq('apartamento_id', currentApartmentId);
-
-      if (error) throw error;
-
-      if (data && data.length > 0) {
-        // Convertir datos de Supabase a formato local
-        const inventoryFromDb = {};
-        data.forEach(item => {
-          inventoryFromDb[item.item_key] = {
-            label: item.label,
-            icon: item.icon,
-            min: item.stock_minimo,
-            current: item.stock_actual
-          };
-        });
-
-        // Actualizar el apartamento con el inventario de Supabase
-        setApartments(prev =>
-          prev.map(apt =>
-            apt.id === currentApartmentId
-              ? { ...apt, inventory: inventoryFromDb }
-              : apt
-          )
-        );
-      }
-    } catch (err) {
-      console.error('Error cargando inventario desde Supabase:', err.message);
-    }
-  };
 
 
   const formatTime = (date) => {
