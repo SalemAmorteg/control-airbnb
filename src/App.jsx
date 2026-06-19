@@ -9,6 +9,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
   const [serviceStarted, setServiceStarted] = useState(false);
   const [startTime, setStartTime] = useState(null);
   const [activeReportId, setActiveReportId] = useState(null);
+  const [notasAseo, setNotasAseo] = useState('');
 
   // Estados para editar inventario
   const [editingInventoryId, setEditingInventoryId] = useState(null);
@@ -218,7 +219,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
     const duration = calculateDuration(startTime, now);
     const notes = completion === 100 ? 'Limpieza completada al 100%' : 'Limpieza parcial';
 
-    // 1. NUEVO: Revisar qué ítems quedaron por debajo del mínimo
+    // 1. Revisar qué ítems quedaron por debajo del mínimo
     const lowStockItems = Object.values(currentApartment.inventory || {}).filter(item => {
       // Usamos Number() para evitar el error matemático de texto vs texto
       const actual = Number(item.stock_actual ?? item.current ?? 0);
@@ -226,9 +227,14 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
       return actual < minimo;
     });
 
-    // 2. NUEVO: Construir el texto de advertencia si hay faltantes
+    // 2. Construir el texto de advertencia si hay faltantes
     const alertasStock = lowStockItems.length > 0
       ? ` | ⚠️ FALTAN INSUMOS: ${lowStockItems.map(i => i.label).join(', ')}`
+      : '';
+
+    // 3. NUEVO: Preparar el texto de las notas del empleado (si escribió algo)
+    const notasDelEmpleado = notasAseo.trim() !== '' 
+      ? ` | 📝 Notas del empleado: ${notasAseo.trim()}` 
       : '';
 
     try {
@@ -239,8 +245,8 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
           checklist_zonas: currentApartment.checklist,
           inventario: currentApartment.inventory,
           completion: completion,
-          // 3. Añadimos alertasStock al final de las novedades
-          novedades: `Trabajador: ${workerName} | Duración: ${duration} | Nota: ${notes}${alertasStock}`
+          // 4. MODIFICADO: Añadimos notasDelEmpleado al final de la cadena
+          novedades: `Trabajador: ${workerName} | Duración: ${duration} | Nota: ${notes}${alertasStock}${notasDelEmpleado}`
         })
         .eq('id', activeReportId);
 
@@ -253,11 +259,13 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
         return apt;
       }));
 
+      // Limpiamos los estados de la sesión de aseo
       setServiceStarted(false);
       setStartTime(null);
       setWorkerName('');
       setCurrentApartmentId(null);
       setActiveReportId(null);
+      setNotasAseo(''); // 5. NUEVO: Limpiar la caja de texto para el próximo reporte
 
       alert(`✓ Reporte enviado\nAseo: ${currentApartment.name}\nDuración: ${duration}`);
     } catch (error) {
@@ -474,90 +482,152 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
   };
 
   const updateInventoryItem = async (apartmentId, key, changes) => {
-  console.log("DEBUG: Iniciando actualización para:", apartmentId, "Clave:", key, "Cambios:", changes);
-  
-  const apt = apartments.find(a => a.id === apartmentId);
-  if (!apt) {
-    console.error("DEBUG: Apartamento no encontrado");
-    return;
-  }
+    console.log("DEBUG: Iniciando actualización para:", apartmentId, "Clave:", key, "Cambios:", changes);
 
-  const updatedInventory = {
-    ...apt.inventory,
-    [key]: {
-      ...apt.inventory[key],
-      ...changes
-    }
-  };
-
-  console.log("DEBUG: Objeto a enviar a Supabase:", updatedInventory);
-
-  const { data, error } = await supabase
-    .from('apartamentos')
-    .update({ inventory: updatedInventory })
-    .eq('id', apartmentId)
-    .select(); // El .select() es vital para ver si la BD responde
-
-  if (error) {
-    console.error("DEBUG: ERROR CRÍTICO EN SUPABASE:", error);
-    alert("Error: " + error.message);
-    return;
-  }
-
-  console.log("DEBUG: Respuesta exitosa de Supabase:", data);
-  
-  // Aquí React debería actualizar la UI y disparar el Realtime
-  setApartments(prev => prev.map(a => 
-    a.id === apartmentId ? { ...a, inventory: updatedInventory } : a
-  ));
-};
-
-const deleteInventoryItem = async (apartmentId, itemKey) => {
-  const apt = apartments.find(a => a.id === apartmentId);
-  if (!apt) return;
-
-  // 1. Creamos un nuevo objeto eliminando la llave del ítem
-  const updatedInventory = { ...apt.inventory };
-  delete updatedInventory[itemKey];
-
-  // 2. Persistimos el cambio en Supabase (¡Esto es lo que falta!)
-  const { error } = await supabase
-    .from('apartamentos')
-    .update({ inventory: updatedInventory })
-    .eq('id', apartmentId);
-
-  if (error) {
-    console.error("Error al eliminar de la base de datos:", error);
-    alert("No se pudo eliminar el artículo.");
-    return;
-  }
-
-  // 3. Actualizamos el estado local para la UI
-  setApartments(prev => prev.map(a => 
-    a.id === apartmentId ? { ...a, inventory: updatedInventory } : a
-  ));
-};
-
-  const deleteApartment = async (apartmentId) => {
-    // 1. ELIMINAR EN SUPABASE (La parte que faltaba)
-    const { error } = await supabase
-      .from('apartamentos')
-      .delete()
-      .eq('id', apartmentId);
-
-    if (error) {
-      console.error("Error al eliminar en la BD:", error);
-      alert("No se pudo eliminar de la base de datos");
+    const apt = apartments.find(a => a.id === apartmentId);
+    if (!apt) {
+      console.error("DEBUG: Apartamento no encontrado");
       return;
     }
 
-    // 2. ELIMINAR EN ESTADO LOCAL (Para que la UI se refresque al instante)
-    setApartments(apartments.filter(apt => apt.id !== apartmentId));
+    const updatedInventory = {
+      ...apt.inventory,
+      [key]: {
+        ...apt.inventory[key],
+        ...changes
+      }
+    };
 
-    // Si estabas editando este apartamento, cierra el editor
-    if (editingApartmentId === apartmentId) {
-      setEditingApartmentId(null);
+    console.log("DEBUG: Objeto a enviar a Supabase:", updatedInventory);
+
+    const { data, error } = await supabase
+      .from('apartamentos')
+      .update({ inventory: updatedInventory })
+      .eq('id', apartmentId)
+      .select(); // El .select() es vital para ver si la BD responde
+
+    if (error) {
+      console.error("DEBUG: ERROR CRÍTICO EN SUPABASE:", error);
+      alert("Error: " + error.message);
+      return;
     }
+
+    console.log("DEBUG: Respuesta exitosa de Supabase:", data);
+
+    // Aquí React debería actualizar la UI y disparar el Realtime
+    setApartments(prev => prev.map(a =>
+      a.id === apartmentId ? { ...a, inventory: updatedInventory } : a
+    ));
+  };
+
+  const deleteInventoryItem = async (apartmentId, itemKey) => {
+    const apt = apartments.find(a => a.id === apartmentId);
+    if (!apt) return;
+
+    // 1. Creamos un nuevo objeto eliminando la llave del ítem
+    const updatedInventory = { ...apt.inventory };
+    delete updatedInventory[itemKey];
+
+    // 2. Persistimos el cambio en Supabase (¡Esto es lo que falta!)
+    const { error } = await supabase
+      .from('apartamentos')
+      .update({ inventory: updatedInventory })
+      .eq('id', apartmentId);
+
+    if (error) {
+      console.error("Error al eliminar de la base de datos:", error);
+      alert("No se pudo eliminar el artículo.");
+      return;
+    }
+
+    // 3. Actualizamos el estado local para la UI
+    setApartments(prev => prev.map(a =>
+      a.id === apartmentId ? { ...a, inventory: updatedInventory } : a
+    ));
+  };
+
+  const deleteApartment = async (apartmentId) => {
+    // 1. Aviso de confirmación
+    const confirmar = window.confirm(
+      "⚠️ ADVERTENCIA: ¿Estás seguro de que deseas eliminar este apartamento?\n\n" +
+      "También se eliminarán TODOS los reportes de aseo asociados a él. Esta acción NO se puede deshacer."
+    );
+
+    if (!confirmar) return;
+
+    try {
+      // 2. Buscamos el apartamento localmente para saber su NOMBRE
+      const apt = apartments.find(a => a.id === apartmentId);
+      if (!apt) return;
+
+      // 3. Borramos los reportes usando la columna 'apartamento' (que tiene el nombre en texto)
+      const { error: errorReportes } = await supabase
+        .from('reportes_aseo')
+        .delete()
+        .eq('apartamento', apt.name); // ¡Aquí estaba el secreto!
+
+      if (errorReportes) {
+        console.error("Error al eliminar los reportes de aseo:", errorReportes);
+        alert("Hubo un problema al intentar borrar los reportes asociados.");
+        return;
+      }
+
+      // 4. Si los reportes se borraron bien, borramos el apartamento
+      const { error: errorApto } = await supabase
+        .from('apartamentos')
+        .delete()
+        .eq('id', apartmentId);
+
+      if (errorApto) {
+        console.error("Error al eliminar el apartamento:", errorApto);
+        alert("No se pudo eliminar el apartamento.");
+        return;
+      }
+
+      // 5. Actualizamos la pantalla
+      setApartments(prev => prev.filter(a => a.id !== apartmentId));
+
+    } catch (err) {
+      console.error("Error inesperado:", err);
+    }
+  };
+
+  // --- FUNCIÓN PARA BOTONES + Y - EN PERFIL ASEO ---
+  const handleAseoStockChange = async (apartmentId, itemKey, changeAmount) => {
+    const apt = apartments.find(a => a.id === apartmentId);
+    if (!apt || !apt.inventory[itemKey]) return;
+
+    // Calculamos el nuevo valor
+    const currentStock = apt.inventory[itemKey].current;
+    let newStock = currentStock + changeAmount;
+
+    // Evitamos números negativos
+    if (newStock < 0) newStock = 0;
+
+    // 1. Preparamos el objeto
+    const updatedInventory = {
+      ...apt.inventory,
+      [itemKey]: {
+        ...apt.inventory[itemKey],
+        current: newStock
+      }
+    };
+
+    // 2. Guardamos en Supabase
+    const { error } = await supabase
+      .from('apartamentos')
+      .update({ inventory: updatedInventory })
+      .eq('id', apartmentId);
+
+    if (error) {
+      console.error("Error al actualizar stock desde Aseo:", error);
+      return;
+    }
+
+    // 3. Actualizamos la pantalla
+    setApartments(prev => prev.map(a =>
+      a.id === apartmentId ? { ...a, inventory: updatedInventory } : a
+    ));
   };
 
   const getLowStockItems = (apt) => {
@@ -654,39 +724,88 @@ const deleteInventoryItem = async (apartmentId, itemKey) => {
               </div>
             )}
 
-            {/* Inventario */}
-            <div style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem', marginBottom: '1.5rem' }}>
-              <h2 style={{ fontSize: '15px', fontWeight: 500, margin: '0 0 1rem 0' }}>📊 Inventario</h2>
-              {Object.entries(currentApartment.inventory).map(([key, item]) => (
-                <div key={key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.75rem', backgroundColor: item.current < item.min ? '#fee2e2' : '#f5f5f5', borderRadius: '6px', gap: '1rem', marginBottom: '0.75rem', borderLeft: item.current < item.min ? '3px solid #ef4444' : 'none' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
-                    <span style={{ fontSize: '18px' }}>{item.icon}</span>
-                    <div>
-                      <span style={{ fontSize: '13px', fontWeight: 500, display: 'block' }}>{item.label}</span>
-                      <span style={{ fontSize: '11px', color: '#666666' }}>Mín: {item.min}</span>
+            <>
+              {/* INVENTARIO */}
+              <div style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem', marginBottom: '1.5rem' }}>
+                <h2 style={{ fontSize: '15px', fontWeight: 500, margin: '0 0 1rem 0' }}>📊 Inventario</h2>
+
+                {/* Verificación de seguridad: solo renderiza si inventory existe */}
+                {currentApartment?.inventory && Object.entries(currentApartment.inventory).map(([key, item]) => (
+                  <div key={key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.75rem', backgroundColor: item.current < item.min ? '#fee2e2' : '#f5f5f5', borderRadius: '6px', gap: '1rem', marginBottom: '0.75rem', borderLeft: item.current < item.min ? '3px solid #ef4444' : 'none' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
+                      <span style={{ fontSize: '18px' }}>{item.icon}</span>
+                      <div>
+                        <span style={{ fontSize: '13px', fontWeight: 500, display: 'block' }}>{item.label}</span>
+                        <span style={{ fontSize: '11px', color: '#666666' }}>Mín: {item.min}</span>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <button
+                        onClick={() => handleAseoStockChange(currentApartment.id, key, -1)}
+                        disabled={item.current <= 0}
+                        style={{ width: '28px', height: '28px', border: '1px solid #d0d0d0', backgroundColor: item.current <= 0 ? '#f3f4f6' : '#ffffff', borderRadius: '6px', cursor: item.current <= 0 ? 'not-allowed' : 'pointer', fontSize: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                      >
+                        −
+                      </button>
+                      <span style={{ fontSize: '15px', fontWeight: 600, minWidth: '24px', textAlign: 'center', color: item.current < item.min ? '#ef4444' : '#1a1a1a' }}>
+                        {item.current}
+                      </span>
+                      <button
+                        onClick={() => handleAseoStockChange(currentApartment.id, key, 1)}
+                        style={{ width: '28px', height: '28px', border: '1px solid #d0d0d0', backgroundColor: '#ffffff', borderRadius: '6px', cursor: 'pointer', fontSize: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                      >
+                        +
+                      </button>
                     </div>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <button onClick={() => updateInventory(key, -1)} style={{ width: '28px', height: '28px', border: '1px solid #d0d0d0', backgroundColor: '#ffffff', borderRadius: '6px', cursor: 'pointer', fontSize: '16px' }}>−</button>
-                    <span style={{ fontSize: '15px', fontWeight: 600, minWidth: '24px', textAlign: 'center', color: item.current < item.min ? '#ef4444' : '#1a1a1a' }}>{item.current}</span>
-                    <button onClick={() => updateInventory(key, 1)} style={{ width: '28px', height: '28px', border: '1px solid #d0d0d0', backgroundColor: '#ffffff', borderRadius: '6px', cursor: 'pointer', fontSize: '16px' }}>+</button>
+                ))}
+              </div>
+
+              {/* NOTAS / NOVEDADES */}
+              <div style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem', marginBottom: '1.5rem' }}>
+                <h2 style={{ fontSize: '15px', fontWeight: 500, margin: '0 0 0.5rem 0' }}>📝 Notas / Novedades</h2>
+                <textarea
+                  value={notasAseo}
+                  onChange={(e) => setNotasAseo(e.target.value)}
+                  placeholder="Deja un comentario para el propietario (ej. Se rompió un vaso, falta jabón...)"
+                  style={{ width: '100%', padding: '0.75rem', border: '1px solid #d0d0d0', borderRadius: '6px', fontSize: '13px', minHeight: '80px', boxSizing: 'border-box', resize: 'vertical', fontFamily: 'inherit' }}
+                />
+              </div>
+
+              {/* PROGRESO Y FINALIZAR */}
+              <div style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem' }}>
+                <div style={{ marginBottom: '1rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                    <span style={{ fontSize: '13px', fontWeight: 500 }}>Progreso</span>
+                    <span style={{ fontSize: '14px', fontWeight: 600, color: completionPercentage === 100 ? '#10b981' : '#3b82f6' }}>
+                      {completionPercentage}%
+                    </span>
+                  </div>
+                  <div style={{ width: '100%', height: '6px', backgroundColor: '#f0f0f0', borderRadius: '6px', overflow: 'hidden' }}>
+                    <div style={{ height: '100%', width: `${completionPercentage}%`, backgroundColor: completionPercentage === 100 ? '#10b981' : '#3b82f6', transition: 'width 0.3s ease' }} />
                   </div>
                 </div>
-              ))}
-            </div>
 
-            <div style={{ backgroundColor: '#ffffff', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem' }}>
-              <div style={{ marginBottom: '1rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                  <span style={{ fontSize: '13px', fontWeight: 500 }}>Progreso</span>
-                  <span style={{ fontSize: '14px', fontWeight: 600, color: '#10b981' }}>{completionPercentage}%</span>
-                </div>
-                <div style={{ width: '100%', height: '6px', backgroundColor: '#f0f0f0', borderRadius: '6px', overflow: 'hidden' }}>
-                  <div style={{ height: '100%', width: `${completionPercentage}%`, backgroundColor: '#10b981' }} />
-                </div>
+                <button
+                  onClick={submitReport}
+                  disabled={completionPercentage < 100}
+                  style={{
+                    width: '100%',
+                    padding: '0.75rem',
+                    backgroundColor: completionPercentage === 100 ? '#10b981' : '#9ca3af',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '14px',
+                    fontWeight: 600,
+                    cursor: completionPercentage === 100 ? 'pointer' : 'not-allowed',
+                    transition: 'background-color 0.3s ease'
+                  }}
+                >
+                  {completionPercentage === 100 ? '✓ Finalizar y enviar reporte' : 'Completa el 100% para enviar'}
+                </button>
               </div>
-              <button onClick={submitReport} style={{ width: '100%', padding: '0.75rem', backgroundColor: '#3b82f6', color: '#ffffff', border: 'none', borderRadius: '6px', fontSize: '14px', fontWeight: 600, cursor: 'pointer' }}>✓ Finalizar y enviar reporte</button>
-            </div>
+            </>
           </div>
         )}
 
