@@ -666,7 +666,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
         {/* EMPLOYEE - CLEANING */}
         {userRole === 'employee' && currentTab === 'cleaning' && serviceStarted && currentApartment && (
           <div>
-            <h2 style={{ fontSize: '15px', fontWeight: 600, marginBottom: '1rem' }}>📋 Checklist de aseo</h2>
+            <h2 style={{ color: '#999999', fontSize: '15px', fontWeight: 600, marginBottom: '1rem' }}>📋 Lista de tareas</h2>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '0.75rem', marginBottom: '1.5rem' }}>
               {Object.entries(zones).map(([zoneKey, zone]) => (
                 <div key={zoneKey} style={{ backgroundColor: '#FFFFFF', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem' }}>
@@ -698,7 +698,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
             <>
               {/* INVENTARIO */}
               <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem', marginBottom: '1.5rem' }}>
-                <h2 style={{ fontSize: '15px', fontWeight: 500, margin: '0 0 1rem 0' }}>Inventario</h2>
+                <h2 style={{ color: '#999999', fontSize: '15px', fontWeight: 500, margin: '0 0 1rem 0' }}>Inventario</h2>
 
                 {/* Verificación de seguridad: solo renderiza si inventory existe */}
                 {currentApartment?.inventory && Object.entries(currentApartment.inventory).map(([key, item]) => (
@@ -734,7 +734,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
 
               {/* NOTAS / NOVEDADES */}
               <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem', marginBottom: '1.5rem' }}>
-                <h2 style={{ fontSize: '15px', fontWeight: 500, margin: '0 0 0.5rem 0' }}>📝 Notas / Novedades</h2>
+                <h2 style={{ color: '#999999', fontSize: '15px', fontWeight: 500, margin: '0 0 0.5rem 0' }}>📝 Notas / Novedades</h2>
                 <textarea
                   value={notasAseo}
                   onChange={(e) => setNotasAseo(e.target.value)}
@@ -748,12 +748,12 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
                 <div style={{ marginBottom: '1rem' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
                     <span style={{ fontSize: '13px', fontWeight: 500 }}>Progreso</span>
-                    <span style={{ fontSize: '14px', fontWeight: 600, color: completionPercentage === 100 ? '#1A1A1A' : '#9C7C38' }}>
+                    <span style={{ fontSize: '14px', fontWeight: 600, color: completionPercentage === 100 ? '#458015' : '#9C7C38' }}>
                       {completionPercentage}%
                     </span>
                   </div>
                   <div style={{ width: '100%', height: '6px', backgroundColor: '#f0f0f0', borderRadius: '6px', overflow: 'hidden' }}>
-                    <div style={{ height: '100%', width: `${completionPercentage}%`, backgroundColor: completionPercentage === 100 ? '#1A1A1A' : '#9C7C38', transition: 'width 0.3s ease' }} />
+                    <div style={{ height: '100%', width: `${completionPercentage}%`, backgroundColor: completionPercentage === 100 ? '#458015' : '#9C7C38', transition: 'width 0.3s ease' }} />
                   </div>
                 </div>
 
@@ -763,7 +763,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
                   style={{
                     width: '100%',
                     padding: '0.75rem',
-                    backgroundColor: completionPercentage === 100 ? '#1A1A1A' : '#9ca3af',
+                    backgroundColor: completionPercentage === 100 ? '#458015' : '#9ca3af',
                     color: '#FFFFFF',
                     border: 'none',
                     borderRadius: '6px',
@@ -773,7 +773,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
                     transition: 'background-color 0.3s ease'
                   }}
                 >
-                  {completionPercentage === 100 ? '✓ Finalizar y enviar reporte' : 'Completa el 100% para enviar'}
+                  {completionPercentage === 100 ? '✓ Finalizar y enviar reporte' : 'Completa las tareas para enviar'}
                 </button>
               </div>
             </>
