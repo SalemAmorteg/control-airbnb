@@ -5,12 +5,21 @@ import { supabase } from './supabaseClient';
 const CleaningCheckModule = ({ apartments, setApartments, onLogout }) => {
   const [isLoggedIn, setIsLoggedIn] = useState(() => localStorage.getItem('isLoggedIn') === 'true');
   const [userRole, setUserRole] = useState(() => localStorage.getItem('userRole'));
-  const [currentTab, setCurrentTab] = useState(userRole === 'owner' ? 'owner' : 'home');
-  const [currentApartmentId, setCurrentApartmentId] = useState(null);
-  const [workerName, setWorkerName] = useState('');
-  const [serviceStarted, setServiceStarted] = useState(false);
-  const [startTime, setStartTime] = useState(null);
-  const [activeReportId, setActiveReportId] = useState(null);
+  const [currentTab, setCurrentTab] = useState(() => {
+    if (localStorage.getItem('serviceStarted') === 'true') return 'cleaning';
+    return localStorage.getItem('userRole') === 'owner' ? 'owner' : 'home';
+  });
+  const [currentApartmentId, setCurrentApartmentId] = useState(() => {
+    const saved = localStorage.getItem('currentApartmentId');
+    return saved ? Number(saved) : null;
+  });
+  const [workerName, setWorkerName] = useState(() => localStorage.getItem('workerName') || '');
+  const [serviceStarted, setServiceStarted] = useState(() => localStorage.getItem('serviceStarted') === 'true');
+  const [startTime, setStartTime] = useState(() => {
+    const saved = localStorage.getItem('startTime');
+    return saved ? new Date(saved) : null;
+  });
+  const [activeReportId, setActiveReportId] = useState(() => localStorage.getItem('activeReportId') || null);
   const [notasAseo, setNotasAseo] = useState('');
 
   // Estados para editar inventario
@@ -192,15 +201,19 @@ const CleaningCheckModule = ({ apartments, setApartments, onLogout }) => {
 
       if (error) throw error;
 
+      const now = new Date();
       if (data && data.length > 0) {
         const newReportId = data[0].id;
         setActiveReportId(newReportId);
-        // Persistimos el ID para resolver el problema del refresco
+        // Persistimos TODO el contexto para resolver el problema del refresco
         localStorage.setItem('activeReportId', newReportId);
         localStorage.setItem('serviceStarted', 'true');
+        localStorage.setItem('currentApartmentId', currentApartmentId.toString());
+        localStorage.setItem('workerName', workerName);
+        localStorage.setItem('startTime', now.toISOString());
       }
 
-      setStartTime(new Date());
+      setStartTime(now);
       setServiceStarted(true);
       setCurrentTab('cleaning');
     } catch (error) {
@@ -262,12 +275,18 @@ const CleaningCheckModule = ({ apartments, setApartments, onLogout }) => {
       setStartTime(null);
       setWorkerName('');
       setCurrentApartmentId(null);
+      setActiveReportId(null);
+      setNotasAseo(''); 
+      setCurrentTab('home');
+
+      // Limpieza total del localStorage
       localStorage.removeItem('activeReportId');
       localStorage.removeItem('serviceStarted');
-      setActiveReportId(null);
-      setNotasAseo(''); // 5. NUEVO: Limpiar la caja de texto para el próximo reporte
-      setCurrentTab('home');
-      alert('Reporte enviado');
+      localStorage.removeItem('currentApartmentId');
+      localStorage.removeItem('workerName');
+      localStorage.removeItem('startTime');
+
+      alert(`✓ Reporte enviado\nAseo: ${currentApartment.name}\nDuración: ${duration}`);
 
 
       alert(`✓ Reporte enviado\nAseo: ${currentApartment.name}\nDuración: ${duration}`);
