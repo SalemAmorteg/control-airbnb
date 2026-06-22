@@ -167,30 +167,6 @@ const CleaningCheckModule = ({ apartments, setApartments, onLogout }) => {
     localStorage.setItem('userRole', userRole || '');
   }, [isLoggedIn, userRole]);
 
-  useEffect(() => {
-    if (userRole === 'employee' && currentApartmentId) {
-      // Suscribirse a cambios en tiempo real
-      const channel = supabase
-        .channel(`inventory_${currentApartmentId}`)
-        .on(
-          'postgres_changes',
-          {
-            event: '*',
-            schema: 'public',
-            table: 'inventario',
-            filter: `apartamento_id=eq.${currentApartmentId}`
-          },
-          (payload) => {
-          }
-        )
-        .subscribe();
-
-      return () => {
-        supabase.removeChannel(channel);
-      };
-    }
-  }, [userRole, currentApartmentId]);
-
 
   const formatTime = (date) => {
     return date.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
@@ -338,7 +314,7 @@ const CleaningCheckModule = ({ apartments, setApartments, onLogout }) => {
       setWorkerName('');
       setCurrentApartmentId(null);
       setActiveReportId(null);
-      setNotasAseo(''); 
+      setNotasAseo('');
       setCurrentTab('home');
 
       // Limpieza total del localStorage
@@ -347,9 +323,6 @@ const CleaningCheckModule = ({ apartments, setApartments, onLogout }) => {
       localStorage.removeItem('currentApartmentId');
       localStorage.removeItem('workerName');
       localStorage.removeItem('startTime');
-
-      alert(`✓ Reporte enviado\nAseo: ${currentApartment.name}\nDuración: ${duration}`);
-
 
       alert(`✓ Reporte enviado\nAseo: ${currentApartment.name}\nDuración: ${duration}`);
     } catch (error) {
@@ -746,7 +719,18 @@ const CleaningCheckModule = ({ apartments, setApartments, onLogout }) => {
                 }
                 setCurrentTab('home');
               }} style={{ padding: '0.6rem 0', backgroundColor: 'transparent', border: 'none', borderBottom: currentTab === 'home' ? '3px solid #8B6F2C' : '3px solid transparent', color: currentTab === 'home' ? '#1A1A1A' : '#525252', fontSize: '12px', fontWeight: currentTab === 'home' ? 700 : 500, cursor: 'pointer', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.5px', transition: 'all 0.3s' }}>Inicio</button>
-            <button onClick={() => { setCurrentTab('home'); if (serviceStarted) setServiceStarted(false); }} style={{ padding: '0.6rem 0', backgroundColor: 'transparent', border: 'none', borderBottom: currentTab === 'cleaning' ? '3px solid #8B6F2C' : '3px solid transparent', color: currentTab === 'cleaning' ? '#1A1A1A' : '#525252', fontSize: '12px', fontWeight: currentTab === 'cleaning' ? 700 : 500, cursor: 'pointer', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.5px', transition: 'all 0.3s' }}>Aseo</button>
+            <button
+              onClick={() => {
+                if (!serviceStarted) {
+                  alert("Debes seleccionar un apartamento e iniciar el servicio primero.");
+                  return;
+                }
+                setCurrentTab('cleaning');
+              }}
+              style={{ padding: '0.6rem 0', backgroundColor: 'transparent', border: 'none', borderBottom: currentTab === 'cleaning' ? '3px solid #8B6F2C' : '3px solid transparent', color: currentTab === 'cleaning' ? '#1A1A1A' : '#525252', fontSize: '12px', fontWeight: currentTab === 'cleaning' ? 700 : 500, cursor: 'pointer', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.5px', transition: 'all 0.3s' }}
+            >
+              Aseo
+            </button>
           </>
         )}
         {userRole === 'owner' && (
@@ -1048,7 +1032,7 @@ const CleaningCheckModule = ({ apartments, setApartments, onLogout }) => {
                     {/* Agregar nuevo artículo */}
                     <div style={{ backgroundColor: '#f9fafb', padding: '1rem', borderRadius: '6px', marginBottom: '1rem', border: '1px solid #e5e7eb' }}>
                       <h4 style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 1rem 0' }}>➕ Nuevo Artículo</h4>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.75rem', marginBottom: '0.75rem' }}>
                         <div>
                           <label style={{ fontSize: '11px', fontWeight: 500, display: 'block', marginBottom: '0.25rem' }}>Nombre</label>
                           <input type="text" value={newInvLabel} onChange={(e) => setNewInvLabel(e.target.value)} placeholder="Toallas" style={{ color: '#999999', backgroundColor: '#FFFFFF', width: '100%', padding: '0.5rem', border: '1px solid #d0d0d0', borderRadius: '4px', fontSize: '12px', boxSizing: 'border-box' }} />
@@ -1058,7 +1042,7 @@ const CleaningCheckModule = ({ apartments, setApartments, onLogout }) => {
                           <input type="text" value={newInvIcon} onChange={(e) => setNewInvIcon(e.target.value)} style={{ color: '#999999', backgroundColor: '#FFFFFF', width: '100%', padding: '0.5rem', border: '1px solid #d0d0d0', borderRadius: '4px', fontSize: '16px', boxSizing: 'border-box', textAlign: 'center' }} />
                         </div>
                       </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.75rem', marginBottom: '0.75rem' }}>
                         <div>
                           <label style={{ fontSize: '11px', fontWeight: 500, display: 'block', marginBottom: '0.25rem' }}>Stock Mínimo</label>
                           <input type="number" value={newInvMin} onChange={(e) => setNewInvMin(e.target.value)} min="0" style={{ color: '#999999', backgroundColor: '#FFFFFF', width: '100%', padding: '0.5rem', border: '1px solid #d0d0d0', borderRadius: '4px', fontSize: '12px', boxSizing: 'border-box' }} />
@@ -1085,7 +1069,7 @@ const CleaningCheckModule = ({ apartments, setApartments, onLogout }) => {
                               </div>
                               <button onClick={() => deleteInventoryItem(aptToEdit.id, key)} style={{ border: 'none', backgroundColor: '#fee2e2', color: '#991b1b', padding: '0.25rem 0.5rem', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>🗑️ Eliminar</button>
                             </div>
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.75rem' }}>
                               <div>
                                 <label style={{ fontSize: '11px', fontWeight: 500, display: 'block', marginBottom: '0.25rem', color: '#626262' }}>Stock Mínimo</label>
                                 <input
@@ -1239,7 +1223,7 @@ const CleanCheckRPM = () => {
   const handleLogout = () => {
     setIsLoggedIn(false);
     setUserRole(null);
-    
+
     // Capturamos si hay datos de un servicio en curso antes del borrado
     const serviceStarted = localStorage.getItem('serviceStarted');
     const activeReportId = localStorage.getItem('activeReportId');
@@ -1265,8 +1249,17 @@ const CleanCheckRPM = () => {
 
   if (!isLoggedIn) {
     return (
-      <div style={{ fontFamily: '"Poppins", system-ui, sans-serif', backgroundColor: '#FAFAFA', minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
-        <div style={{ backgroundColor: '#FFFFFF', borderRadius: '12px', boxShadow: '0 10px 25px rgba(0,0,0,0.1)', padding: '2rem', maxWidth: '400px', width: '100%' }}>
+      <div style={{ fontFamily: '"Poppins", system-ui, sans-serif', backgroundColor: '#FAFAFA', minHeight: '100vh', padding: '0', color: '#1A1A1A' }}>
+        {/* Estilos globales responsivos para parches específicos en móviles */}
+        <style>{`
+      @media (max-width: 600px) {
+        .responsive-header { flex-direction: column; align-items: center; text-align: center; gap: 1.25rem; }
+        .responsive-container { padding: 1rem 0.5rem !important; }
+        h1 { font-size: 18px !important; }
+      }
+    `}</style>
+
+        <div style={{ backgroundColor: '#FFFFFF', borderBottom: '1px solid #E5E5E5', padding: '1.5rem 1rem', position: 'sticky', top: 0, zIndex: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
           <div style={{ textAlign: 'center', marginBottom: '2.5rem' }}>
             <div style={{ border: '2px solid #9C7C38', color: '#9C7C38', borderRadius: '50%', width: '48px', height: '48px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px', margin: '0 auto 1rem' }}>✦</div>
             <h1 style={{ fontSize: '26px', fontWeight: 600, margin: '0 0 0.5rem 0', color: '#1A1A1A', letterSpacing: '0.5px' }}>Home Quality</h1>
@@ -1281,7 +1274,7 @@ const CleanCheckRPM = () => {
               <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, marginBottom: '0.6rem', color: '#1A1A1A', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Contraseña</label>
               <input type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && handleLogin('employee')} placeholder="Ingresa tu contraseña" style={{ width: '100%', padding: '0.8rem', border: '1px solid #E5E5E5', borderRadius: '6px', fontSize: '13px', boxSizing: 'border-box', fontFamily: 'inherit', backgroundColor: '#FFFFFF', color: '#1A1A1A' }} />
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
               <button onClick={() => handleLogin('employee')} style={{ padding: '0.85rem', backgroundColor: '#8B6F2C', color: '#FFFFFF', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', transition: 'all 0.3s', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Staff de Limpieza</button>
               <button onClick={() => handleLogin('owner')} style={{ padding: '0.85rem', backgroundColor: '#2D2D2D', color: '#FFFFFF', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', transition: 'all 0.3s', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Administrador</button>
             </div>
@@ -1301,7 +1294,7 @@ const CleanCheckRPM = () => {
   return (
     <div style={{ fontFamily: '"Poppins", system-ui, sans-serif', backgroundColor: '#FAFAFA', minHeight: '100vh', padding: '0', color: '#1A1A1A' }}>
       <div style={{ backgroundColor: '#FFFFFF', borderBottom: '1px solid #E5E5E5', padding: '1.5rem 1rem', position: 'sticky', top: 0, zIndex: 10, boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', maxWidth: '1200px', margin: '0 auto', marginBottom: userRole === 'owner' ? '1.5rem' : '0' }}>
+        <div className="responsive-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem', maxWidth: '1200px', margin: '0 auto', marginBottom: userRole === 'owner' ? '1.5rem' : '0' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             {/* Logo Icono Premium */}
             <div style={{ border: '2px solid #9C7C38', color: '#9C7C38', borderRadius: '50%', width: '42px', height: '42px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px' }}>✦</div>
@@ -1326,7 +1319,7 @@ const CleanCheckRPM = () => {
         )}
       </div>
 
-      <div style={{ padding: '2rem 1rem', maxWidth: '1200px', margin: '0 auto' }}>
+      <div className="responsive-container" style={{ padding: '2rem 1rem', maxWidth: '1200px', margin: '0 auto' }}>
         {currentModule === 'cleaning-check' && (
           <CleaningCheckModule userRole={userRole} apartments={apartments} setApartments={setApartments} onLogout={handleLogout} />
         )}
