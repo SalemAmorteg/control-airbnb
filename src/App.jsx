@@ -5,10 +5,13 @@ import { supabase } from './supabaseClient';
 const CleaningCheckModule = ({ apartments, setApartments, onLogout }) => {
   const [isLoggedIn, setIsLoggedIn] = useState(() => localStorage.getItem('isLoggedIn') === 'true');
   const [userRole, setUserRole] = useState(() => localStorage.getItem('userRole'));
+  // Cambiado: Ahora decide la pestaña inicial dependiendo de si hay un servicio en curso
   const [currentTab, setCurrentTab] = useState(() => {
-    if (localStorage.getItem('serviceStarted') === 'true') return 'cleaning';
-    return localStorage.getItem('userRole') === 'owner' ? 'owner' : 'home';
+    const isServiceActive = localStorage.getItem('serviceStarted') === 'true';
+    if (localStorage.getItem('userRole') === 'owner') return 'owner';
+    return isServiceActive ? 'cleaning' : 'home';
   });
+  // Cambiado: Leen directamente del LocalStorage desde el primer milisegundo
   const [currentApartmentId, setCurrentApartmentId] = useState(() => {
     const saved = localStorage.getItem('currentApartmentId');
     return saved ? Number(saved) : null;
@@ -64,30 +67,100 @@ const CleaningCheckModule = ({ apartments, setApartments, onLogout }) => {
 
   useEffect(() => {
     const fetchApartmentsFromDB = async () => {
-      const { data, error } = await supabase.from('apartamentos').select('*');
-      if (data) {
-        setApartments(data);
+      // 1. Descargamos los apartamentos base
+      const { data: aptsData, error } = await supabase.from('apartamentos').select('*');
+      if (aptsData) {
+        let updatedApts = aptsData;
+
+        // 2. Si es empleado, escaneamos la BD buscando algún servicio activo "En Progreso"
+        if (userRole === 'employee') {
+          const { data: activeReports } = await supabase
+            .from('reportes_aseo')
+            .select('*')
+            .eq('estado', 'En Progreso')
+            .order('created_at', { ascending: false })
+            .limit(1);
+
+          if (activeReports && activeReports.length > 0) {
+            const activeReport = activeReports[0];
+            // Buscamos el apartamento que coincida con el nombre del reporte
+            const matchingApt = aptsData.find(a => a.name === activeReport.apartamento);
+
+            if (matchingApt) {
+              // Inyectamos el checklist guardado en Supabase dentro de nuestro estado local
+              updatedApts = aptsData.map(apt => {
+                if (apt.id === matchingApt.id) {
+                  return {
+                    ...apt,
+                    checklist: activeReport.checklist_zonas || apt.checklist
+                  };
+                }
+                return apt;
+              });
+
+              // Extraemos el nombre del trabajador desde la cadena de novedades
+              let extractedWorkerName = '';
+              if (activeReport.novedades && activeReport.novedades.includes('Servicio iniciado por: ')) {
+                extractedWorkerName = activeReport.novedades.replace('Servicio iniciado por: ', '');
+              }
+
+              // Sincronizamos todos los estados y forzamos la vista de Aseo
+              setActiveReportId(activeReport.id);
+              setCurrentApartmentId(matchingApt.id);
+              setWorkerName(extractedWorkerName || localStorage.getItem('workerName') || '');
+              setStartTime(new Date(activeReport.created_at));
+              setServiceStarted(true);
+              setCurrentTab('cleaning');
+
+              // Aseguramos persistencia local de respaldo
+              localStorage.setItem('activeReportId', activeReport.id);
+              localStorage.setItem('serviceStarted', 'true');
+              localStorage.setItem('currentApartmentId', matchingApt.id.toString());
+              if (extractedWorkerName) localStorage.setItem('workerName', extractedWorkerName);
+            }
+          }
+        } else {
+          // Si es administrador o rehidratación rápida por localStorage tradicional
+          const savedReportId = localStorage.getItem('activeReportId');
+          const isServiceActive = localStorage.getItem('serviceStarted') === 'true';
+          const savedAptId = localStorage.getItem('currentApartmentId');
+
+          if (isServiceActive && savedReportId && savedAptId) {
+            const { data: reportData } = await supabase
+              .from('reportes_aseo')
+              .select('checklist_zonas')
+              .eq('id', savedReportId)
+              .single();
+
+            if (reportData) {
+              updatedApts = aptsData.map(apt => {
+                if (apt.id === Number(savedAptId)) {
+                  return { ...apt, checklist: reportData.checklist_zonas || apt.checklist };
+                }
+                return apt;
+              });
+            }
+          }
+        }
+
+        setApartments(updatedApts);
       }
     };
 
     fetchApartmentsFromDB();
 
-    // Suscripción a cambios en tiempo real (INSERT y DELETE)
+    // Suscripción Realtime
     const channel = supabase
       .channel('public:apartamentos')
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'apartamentos' }, // El '*' escucha todos los cambios
-        (payload) => {
-          console.log('Cambio detectado:', payload);
-          fetchApartmentsFromDB(); // Esto refresca la lista automáticamente
-        }
-      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'apartamentos' }, () => {
+        fetchApartmentsFromDB();
+      })
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [setApartments]);
+  }, [setApartments, userRole]);
 
   useEffect(() => {
     localStorage.setItem('isLoggedIn', isLoggedIn);
@@ -150,17 +223,6 @@ const CleaningCheckModule = ({ apartments, setApartments, onLogout }) => {
     }
   }, [userRole, currentTab]);
 
-  useEffect(() => {
-    const savedReportId = localStorage.getItem('activeReportId');
-    const isServiceActive = localStorage.getItem('serviceStarted');
-
-    if (isServiceActive === 'true' && savedReportId) {
-      setActiveReportId(savedReportId);
-      setServiceStarted(true);
-      // Opcional: Podrías cargar los datos del reporte desde Supabase aquí 
-      // para que el usuario vea el progreso que tenía antes del refresh
-    }
-  }, []);
 
   const fetchReportsFromSupabase = async () => {
     setIsLoadingReports(true);
@@ -205,12 +267,12 @@ const CleaningCheckModule = ({ apartments, setApartments, onLogout }) => {
       if (data && data.length > 0) {
         const newReportId = data[0].id;
         setActiveReportId(newReportId);
-        // Persistimos TODO el contexto para resolver el problema del refresco
+        // Persistencia completa al iniciar
         localStorage.setItem('activeReportId', newReportId);
         localStorage.setItem('serviceStarted', 'true');
         localStorage.setItem('currentApartmentId', currentApartmentId.toString());
         localStorage.setItem('workerName', workerName);
-        localStorage.setItem('startTime', now.toISOString());
+        localStorage.setItem('startTime', new Date().toISOString());
       }
 
       setStartTime(now);
@@ -1177,7 +1239,25 @@ const CleanCheckRPM = () => {
   const handleLogout = () => {
     setIsLoggedIn(false);
     setUserRole(null);
-    localStorage.clear(); // Limpia todo al salir
+    
+    // Capturamos si hay datos de un servicio en curso antes del borrado
+    const serviceStarted = localStorage.getItem('serviceStarted');
+    const activeReportId = localStorage.getItem('activeReportId');
+    const currentApartmentId = localStorage.getItem('currentApartmentId');
+    const workerName = localStorage.getItem('workerName');
+    const startTime = localStorage.getItem('startTime');
+
+    localStorage.clear(); // Limpia sesiones de usuario y credenciales
+
+    // Si había un servicio activo, volvemos a inyectar sus variables
+    if (serviceStarted === 'true') {
+      localStorage.setItem('serviceStarted', 'true');
+      localStorage.setItem('activeReportId', activeReportId);
+      localStorage.setItem('currentApartmentId', currentApartmentId);
+      localStorage.setItem('workerName', workerName);
+      localStorage.setItem('startTime', startTime);
+    }
+
     setLoginUsername('');
     setLoginPassword('');
     setCurrentModule('cleaning-check');
