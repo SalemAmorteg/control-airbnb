@@ -1197,26 +1197,38 @@ const CleanCheckRPM = () => {
     }
   ]);
 
-  const credentials = {
-    employee: { username: 'aseo', password: '1234' },
-    owner: { username: 'propietario', password: '1234' }
-  };
+  const authorizedUsers = [
+    // 1 Perfil Staff de Limpieza
+    { username: 'Ana123', password: '123', role: 'employee' },
+
+    // 3 Perfiles de Administrador
+    { username: 'samortegui', password: 'AdminSalem2026', role: 'owner' },
+    { username: 'iamortegui', password: 'AdminSocio2026', role: 'owner' },
+    { username: 'carmenadmin', password: 'AdminOps2026', role: 'owner' }
+  ];
 
   useEffect(() => {
     document.title = 'Clean Check RPM - Revenue Property Management';
   }, []);
 
-  const handleLogin = (role) => {
-    if (loginUsername === credentials[role].username && loginPassword === credentials[role].password) {
+  const handleLogin = (roleAttempted) => {
+    // Buscamos si existe un usuario que coincida exactamente con las credenciales y el botón que presionó
+    const validUser = authorizedUsers.find(user =>
+      user.username === loginUsername &&
+      user.password === loginPassword &&
+      user.role === roleAttempted
+    );
+
+    if (validUser) {
       setIsLoggedIn(true);
-      setUserRole(role);
+      setUserRole(validUser.role);
       localStorage.setItem('isLoggedIn', 'true');
-      localStorage.setItem('userRole', role);
+      localStorage.setItem('userRole', validUser.role);
       setLoginUsername('');
       setLoginPassword('');
       setCurrentModule('cleaning-check');
     } else {
-      alert('Usuario o contraseña incorrectos');
+      alert('Usuario o contraseña incorrectos. Verifica tus credenciales.');
     }
   };
 
@@ -1277,13 +1289,6 @@ const CleanCheckRPM = () => {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '1rem', marginBottom: '1rem' }}>
               <button onClick={() => handleLogin('employee')} style={{ padding: '0.85rem', backgroundColor: '#8B6F2C', color: '#FFFFFF', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', transition: 'all 0.3s', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Staff de Limpieza</button>
               <button onClick={() => handleLogin('owner')} style={{ padding: '0.85rem', backgroundColor: '#2D2D2D', color: '#FFFFFF', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 700, cursor: 'pointer', transition: 'all 0.3s', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Administrador</button>
-            </div>
-          </div>
-          <div style={{ backgroundColor: '#F9F5F0', border: '1px solid #9C7C38', borderRadius: '6px', padding: '1rem', fontSize: '11px', color: '#9C7C38' }}>
-            <strong style={{ display: 'block', marginBottom: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Credenciales Demo:</strong>
-            <div style={{ lineHeight: 1.7 }}>
-              <div>🧹 Staff: <code style={{ backgroundColor: '#9C7C38', padding: '0.25rem 0.5rem', borderRadius: '3px', fontFamily: 'monospace', fontSize: '10px' }}>aseo / 1234</code></div>
-              <div>👤 Admin: <code style={{ backgroundColor: '#9C7C38', padding: '0.25rem 0.5rem', borderRadius: '3px', fontFamily: 'monospace', fontSize: '10px' }}>propietario / 1234</code></div>
             </div>
           </div>
         </div>
