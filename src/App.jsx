@@ -2,7 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from './supabaseClient';
 
 // ============ MÓDULO: CLEANING CHECK ============
-const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) => {
+const CleaningCheckModule = ({ apartments, setApartments, onLogout }) => {
+  const [isLoggedIn, setIsLoggedIn] = useState(() => localStorage.getItem('isLoggedIn') === 'true');
+  const [userRole, setUserRole] = useState(() => localStorage.getItem('userRole'));
   const [currentTab, setCurrentTab] = useState(userRole === 'owner' ? 'owner' : 'home');
   const [currentApartmentId, setCurrentApartmentId] = useState(null);
   const [workerName, setWorkerName] = useState('');
@@ -38,6 +40,17 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
 
   const currentApartment = apartments.find(a => a.id === currentApartmentId);
 
+  useEffect(() => {
+    const savedReportId = localStorage.getItem('activeReportId');
+    const isServiceStarted = localStorage.getItem('serviceStarted') === 'true';
+
+    if (isServiceStarted && savedReportId) {
+      setActiveReportId(savedReportId);
+      setServiceStarted(true);
+      setCurrentTab('cleaning'); // Obliga a volver a la pestaña de aseo
+    }
+  }, []);
+
   // ===== SINCRONIZACIÓN DE INVENTARIO =====
 
   useEffect(() => {
@@ -66,6 +79,11 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
       supabase.removeChannel(channel);
     };
   }, [setApartments]);
+
+  useEffect(() => {
+    localStorage.setItem('isLoggedIn', isLoggedIn);
+    localStorage.setItem('userRole', userRole || '');
+  }, [isLoggedIn, userRole]);
 
   useEffect(() => {
     if (userRole === 'employee' && currentApartmentId) {
@@ -123,6 +141,18 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
     }
   }, [userRole, currentTab]);
 
+  useEffect(() => {
+    const savedReportId = localStorage.getItem('activeReportId');
+    const isServiceActive = localStorage.getItem('serviceStarted');
+
+    if (isServiceActive === 'true' && savedReportId) {
+      setActiveReportId(savedReportId);
+      setServiceStarted(true);
+      // Opcional: Podrías cargar los datos del reporte desde Supabase aquí 
+      // para que el usuario vea el progreso que tenía antes del refresh
+    }
+  }, []);
+
   const fetchReportsFromSupabase = async () => {
     setIsLoadingReports(true);
     try {
@@ -144,13 +174,17 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
     if (!currentApartment || !workerName.trim()) return;
 
     try {
+      // 1. Limpiamos los datos: Aseguramos que son solo valores de texto/números/booleanos
+      const cleanChecklist = JSON.parse(JSON.stringify(currentApartment.checklist));
+      const cleanInventory = JSON.parse(JSON.stringify(currentApartment.inventory));
+
       const { data, error } = await supabase
         .from('reportes_aseo')
         .insert([{
           apartamento: currentApartment.name,
           estado: 'En Progreso',
-          checklist_zonas: currentApartment.checklist,
-          inventario: currentApartment.inventory,
+          checklist_zonas: cleanChecklist, // Usamos la versión limpia
+          inventario: cleanInventory,      // Usamos la versión limpia
           completion: 0,
           novedades: `Servicio iniciado por: ${workerName}`
         }])
@@ -159,13 +193,18 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
       if (error) throw error;
 
       if (data && data.length > 0) {
-        setActiveReportId(data[0].id);
+        const newReportId = data[0].id;
+        setActiveReportId(newReportId);
+        // Persistimos el ID para resolver el problema del refresco
+        localStorage.setItem('activeReportId', newReportId);
+        localStorage.setItem('serviceStarted', 'true');
       }
 
       setStartTime(new Date());
       setServiceStarted(true);
       setCurrentTab('cleaning');
     } catch (error) {
+      console.error(error); // Ver el error completo en consola
       alert('Error al conectar con Supabase: ' + error.message);
     }
   };
@@ -223,8 +262,13 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
       setStartTime(null);
       setWorkerName('');
       setCurrentApartmentId(null);
+      localStorage.removeItem('activeReportId');
+      localStorage.removeItem('serviceStarted');
       setActiveReportId(null);
       setNotasAseo(''); // 5. NUEVO: Limpiar la caja de texto para el próximo reporte
+      setCurrentTab('home');
+      alert('Reporte enviado');
+
 
       alert(`✓ Reporte enviado\nAseo: ${currentApartment.name}\nDuración: ${duration}`);
     } catch (error) {
@@ -613,7 +657,14 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
       <div style={{ display: 'flex', gap: '2rem', borderBottom: '1px solid #E5E5E5', paddingBottom: '0.75rem', marginBottom: '2rem', overflow: 'auto' }}>
         {userRole === 'employee' && (
           <>
-            <button onClick={() => { setCurrentTab('home'); if (serviceStarted) setServiceStarted(false); }} style={{ padding: '0.6rem 0', backgroundColor: 'transparent', border: 'none', borderBottom: currentTab === 'home' ? '3px solid #8B6F2C' : '3px solid transparent', color: currentTab === 'home' ? '#1A1A1A' : '#525252', fontSize: '12px', fontWeight: currentTab === 'home' ? 700 : 500, cursor: 'pointer', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.5px', transition: 'all 0.3s' }}>Inicio</button>
+            <button
+              onClick={() => {
+                if (serviceStarted) {
+                  alert("No puedes salir. Finaliza el reporte primero.");
+                  return;
+                }
+                setCurrentTab('home');
+              }} style={{ padding: '0.6rem 0', backgroundColor: 'transparent', border: 'none', borderBottom: currentTab === 'home' ? '3px solid #8B6F2C' : '3px solid transparent', color: currentTab === 'home' ? '#1A1A1A' : '#525252', fontSize: '12px', fontWeight: currentTab === 'home' ? 700 : 500, cursor: 'pointer', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.5px', transition: 'all 0.3s' }}>Inicio</button>
             <button onClick={() => { setCurrentTab('home'); if (serviceStarted) setServiceStarted(false); }} style={{ padding: '0.6rem 0', backgroundColor: 'transparent', border: 'none', borderBottom: currentTab === 'cleaning' ? '3px solid #8B6F2C' : '3px solid transparent', color: currentTab === 'cleaning' ? '#1A1A1A' : '#525252', fontSize: '12px', fontWeight: currentTab === 'cleaning' ? 700 : 500, cursor: 'pointer', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.5px', transition: 'all 0.3s' }}>Aseo</button>
           </>
         )}
@@ -631,21 +682,20 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
         {/* EMPLOYEE - HOME */}
         {userRole === 'employee' && currentTab === 'home' && !serviceStarted && (
           <div>
-            <h2 style={{ color: '#999999', fontSize: '16px', fontWeight: 600, marginBottom: '1rem' }}>Selecciona un apartamento</h2>
+            <h2 style={{ color: '#999999', fontSize: '16px', fontWeight: 600, marginBottom: '1rem' }}>Selecciona un apartamento para inciar el servicio</h2>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '1rem', marginBottom: '2rem' }}>
               {apartments.map(apt => (
                 <div key={apt.id} onClick={() => setCurrentApartmentId(apt.id)} style={{
-                  backgroundColor: '#FFFFFF',
-                  border: '1px solid #E5E5E5',
-                  borderRadius: '16px',
+                  backgroundColor: '#948c399c',
+                  border: '1px solid #00000086',
+                  borderRadius: '25px',
                   padding: '1.5rem',
                   marginBottom: '1rem',
                   boxShadow: '0 2px 4px rgba(0,0,0,0.02)',
                   transition: 'transform 0.2s ease, box-shadow 0.2s ease',
                   cursor: 'pointer'
                 }}>
-                  <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '0 0 0.5rem 0' }}>{apt.name}</h3>
-                  <p style={{ fontSize: '12px', color: '#626262', margin: '0' }}>Items: {Object.keys(apt.inventory).length}</p>
+                  <h3 style={{ color: '#000000b0', fontSize: '15px', fontWeight: 700, margin: '0 0 0.5rem 0' }}>{apt.name}</h3>
                 </div>
               ))}
             </div>
@@ -865,10 +915,10 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
               return (
                 <div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1.5rem' }}>
-                    <button onClick={() => setEditingApartmentId(null)} style={{ padding: '0.6rem 1rem', backgroundColor: '#9C7C38', color: '#FFFFFF', border: '1px solid #d1d5db', borderRadius: '6px', cursor: 'pointer', fontSize: '13px'}}>
+                    <button onClick={() => setEditingApartmentId(null)} style={{ padding: '0.6rem 1.25rem', backgroundColor: '#9C7C38', color: '#FFFFFF', border: 'none', borderRadius: '6px', fontSize: '13px', cursor: 'pointer' }}>
                       ⬅ Volver
                     </button>
-                    <h2 style={{color: '#999999', fontSize: '16px', fontWeight: 600, margin: 0 }}>Configurar: <span style={{ color: '#2563eb' }}>{aptToEdit.name}</span></h2>
+                    <h2 style={{ color: '#999999', fontSize: '16px', fontWeight: 600, margin: 0 }}>Configurar: <span style={{ color: '#000000' }}>{aptToEdit.name}</span></h2>
                   </div>
 
                   {/* EDITAR NOMBRE */}
@@ -996,7 +1046,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
               );
             })() : (
               <div>
-                <h2 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '1rem' }}>⚙️ Configuración</h2>
+                <h2 style={{ color: '#000000', fontSize: '16px', fontWeight: 600, marginBottom: '1rem' }}>Configuración</h2>
                 <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #e0e0e0', borderRadius: '8px', padding: '1rem', marginBottom: '1.5rem' }}>
                   <h3 style={{ fontSize: '14px', fontWeight: 600, margin: '0 0 1rem 0' }}>➕ Nuevo apartamento</h3>
                   <div style={{ display: 'flex', gap: '0.75rem' }}>
@@ -1005,7 +1055,7 @@ const CleaningCheckModule = ({ userRole, apartments, setApartments, onLogout }) 
                   </div>
                 </div>
 
-                <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '0 0 1rem 0' }}>📍 Mis Apartamentos</h3>
+                <h3 style={{ fontSize: '15px', fontWeight: 600, margin: '0 0 1rem 0' }}>Mis Apartamentos</h3>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))', gap: '1rem' }}>
                   {apartments.map(apt => {
                     const lowStock = getLowStockItems(apt);
@@ -1051,11 +1101,16 @@ const RevenueAnalysisModule = ({ onLogout }) => {
 
 // ============ APP PRINCIPAL ============
 const CleanCheckRPM = () => {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [userRole, setUserRole] = useState(null);
+  const [isLoggedIn, setIsLoggedIn] = useState(() => localStorage.getItem('isLoggedIn') === 'true');
+  const [userRole, setUserRole] = useState(() => localStorage.getItem('userRole'));
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [currentModule, setCurrentModule] = useState('cleaning-check');
+
+  useEffect(() => {
+    localStorage.setItem('isLoggedIn', isLoggedIn);
+    localStorage.setItem('userRole', userRole || '');
+  }, [isLoggedIn, userRole]);
 
   const [apartments, setApartments] = useState([
     {
@@ -1090,6 +1145,8 @@ const CleanCheckRPM = () => {
     if (loginUsername === credentials[role].username && loginPassword === credentials[role].password) {
       setIsLoggedIn(true);
       setUserRole(role);
+      localStorage.setItem('isLoggedIn', 'true');
+      localStorage.setItem('userRole', role);
       setLoginUsername('');
       setLoginPassword('');
       setCurrentModule('cleaning-check');
@@ -1101,6 +1158,7 @@ const CleanCheckRPM = () => {
   const handleLogout = () => {
     setIsLoggedIn(false);
     setUserRole(null);
+    localStorage.clear(); // Limpia todo al salir
     setLoginUsername('');
     setLoginPassword('');
     setCurrentModule('cleaning-check');
